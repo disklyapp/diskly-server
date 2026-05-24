@@ -3,23 +3,54 @@ import prisma from '../config/prisma.js';
 
 const router = Router();
 
-// Add a View (and calculate earnings)
-router.post('/:id/view', async (req: Request, res: Response) => {
-  const { id } = req.params;
+// Fetch Single Video
+router.get('/:key', async (req: Request, res: Response) => {
+  const { key } = req.params;
+  try {
+    const video = await prisma.video.findFirst({
+      where: { downloadKey: key as string },
+      select: { title: true, streamUrl: true, thumbnailUrl: true, views: true, likes: true, bookmarks: true, createdAt: true, downloadKey: true }
+    });
+    if (!video) return res.status(404).json({ error: 'Video not found' });
+    res.json(video);
+  } catch (error: any) {
+    console.error('Error fetching video:', error);
+    res.status(500).json({ error: 'Failed to fetch video', details: error?.message || String(error) });
+  }
+});
+
+// Fetch Multiple Videos by Keys (Batch)
+router.post('/batch', async (req: Request, res: Response) => {
+  const { keys } = req.body;
+  if (!Array.isArray(keys)) return res.status(400).json({ error: 'keys must be an array of strings' });
   
   try {
-    const videoId = Number(id);
-    const video = await prisma.video.findUnique({ where: { id: videoId } });
+    const videos = await prisma.video.findMany({
+      where: { downloadKey: { in: keys } },
+      select: { title: true, streamUrl: true, thumbnailUrl: true, views: true, likes: true, bookmarks: true, createdAt: true, downloadKey: true }
+    });
+    res.json(videos);
+  } catch (error: any) {
+    console.error('Error fetching batch videos:', error);
+    res.status(500).json({ error: 'Failed to fetch videos', details: error?.message || String(error) });
+  }
+});
+
+// Add a View (and calculate earnings)
+router.post('/:key/view', async (req: Request, res: Response) => {
+  const { key } = req.params;
+  
+  try {
+    const video = await prisma.video.findFirst({ where: { downloadKey: key as string } });
     if (!video) return res.status(404).json({ error: 'Video not found' });
 
     let setting = await prisma.systemSetting.findUnique({ where: { id: 1 } });
     const earningPerView = (setting?.earningRatePer1000Views || 1.0) / 1000.0;
 
-    // We do this inside a transaction to ensure data consistency
     await prisma.$transaction(async (prismaClient: any) => {
       // 1. Increment Video view
       await prismaClient.video.update({
-        where: { id: videoId },
+        where: { id: video.id },
         data: { views: { increment: 1 } }
       });
 
@@ -68,21 +99,22 @@ router.post('/:id/view', async (req: Request, res: Response) => {
 });
 
 // Add a Like
-router.post('/:id/like', async (req: Request, res: Response) => {
-  const { id } = req.params;
+router.post('/:key/like', async (req: Request, res: Response) => {
+  const { key } = req.params;
   
   try {
-    const videoId = Number(id);
-    const video = await prisma.video.update({
-      where: { id: videoId },
+    const video = await prisma.video.findFirst({ where: { downloadKey: key as string } });
+    if (!video) return res.status(404).json({ error: 'Video not found' });
+
+    const updatedVideo = await prisma.video.update({
+      where: { id: video.id },
       data: { likes: { increment: 1 } }
     });
 
-    // Also update Daily Analytic
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const analytic = await prisma.dailyAnalytic.findUnique({
-      where: { adminId_date: { adminId: video.adminId, date: today } }
+      where: { adminId_date: { adminId: updatedVideo.adminId, date: today } }
     });
 
     if (analytic) {
@@ -99,21 +131,23 @@ router.post('/:id/like', async (req: Request, res: Response) => {
   }
 });
 
-// Add a Bookmark
-router.post('/:id/bookmark', async (req: Request, res: Response) => {
-  const { id } = req.params;
+// Add a Download (Bookmark)
+router.post('/:key/download', async (req: Request, res: Response) => {
+  const { key } = req.params;
   
   try {
-    const videoId = Number(id);
+    const video = await prisma.video.findFirst({ where: { downloadKey: key as string } });
+    if (!video) return res.status(404).json({ error: 'Video not found' });
+
     await prisma.video.update({
-      where: { id: videoId },
+      where: { id: video.id },
       data: { bookmarks: { increment: 1 } }
     });
 
-    res.json({ message: 'Bookmark recorded' });
+    res.json({ message: 'Download recorded' });
   } catch (error: any) {
-    console.error('Error recording bookmark:', error);
-    res.status(500).json({ error: 'Failed to record bookmark', details: error?.message || String(error) });
+    console.error('Error recording download:', error);
+    res.status(500).json({ error: 'Failed to record download', details: error?.message || String(error) });
   }
 });
 
