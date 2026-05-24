@@ -45,8 +45,9 @@ router.get('/dashboard', async (req: Request, res: Response) => {
         bookmarks: engagements._sum.bookmarks || 0,
       }
     });
-  } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+  } catch (error: any) {
+    console.error('Error fetching superadmin dashboard:', error);
+    res.status(500).json({ error: 'Failed to fetch superadmin dashboard data', details: error?.message || String(error) });
   }
 });
 
@@ -58,8 +59,9 @@ router.get('/settings', async (req: Request, res: Response) => {
       setting = await prisma.systemSetting.create({ data: {} });
     }
     res.json(setting);
-  } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+  } catch (error: any) {
+    console.error('Error fetching system settings:', error);
+    res.status(500).json({ error: 'Failed to fetch system settings', details: error?.message || String(error) });
   }
 });
 
@@ -73,8 +75,9 @@ router.put('/settings', async (req: Request, res: Response) => {
       create: { earningRatePer1000Views, telegramUploadEnabled, minimumPayoutThreshold }
     });
     res.json(setting);
-  } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+  } catch (error: any) {
+    console.error('Error updating system settings:', error);
+    res.status(500).json({ error: 'Failed to update system settings', details: error?.message || String(error) });
   }
 });
 
@@ -85,8 +88,9 @@ router.get('/admins', async (req: Request, res: Response) => {
       select: { id: true, email: true, telegramUploadId: true, dailyUploadLimit: true, monthlyUploadLimit: true, balance: true, totalEarnings: true, createdAt: true }
     });
     res.json(admins);
-  } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+  } catch (error: any) {
+    console.error('Error fetching admins:', error);
+    res.status(500).json({ error: 'Failed to fetch admins list', details: error?.message || String(error) });
   }
 });
 
@@ -101,8 +105,9 @@ router.put('/admins/limits', async (req: Request, res: Response) => {
       data: { dailyUploadLimit, monthlyUploadLimit }
     });
     res.json({ message: 'Limits updated', count: updated.count });
-  } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+  } catch (error: any) {
+    console.error('Error updating admin limits:', error);
+    res.status(500).json({ error: 'Failed to update admin limits', details: error?.message || String(error) });
   }
 });
 
@@ -111,8 +116,9 @@ router.get('/payouts', async (req: Request, res: Response) => {
   try {
     const payouts = await prisma.payoutRequest.findMany({ include: { admin: { select: { email: true } } } });
     res.json(payouts);
-  } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+  } catch (error: any) {
+    console.error('Error fetching payout requests:', error);
+    res.status(500).json({ error: 'Failed to fetch payout requests', details: error?.message || String(error) });
   }
 });
 
@@ -142,8 +148,9 @@ router.put('/payouts/:id', async (req: Request, res: Response) => {
     }
 
     res.json({ message: `Payout ${status}` });
-  } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+  } catch (error: any) {
+    console.error('Error processing payout:', error);
+    res.status(500).json({ error: 'Failed to process payout', details: error?.message || String(error) });
   }
 });
 

@@ -21,8 +21,9 @@ router.post('/register', async (req: Request, res: Response) => {
     });
 
     res.json({ message: 'Admin registered successfully' });
-  } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+  } catch (error: any) {
+    console.error('Error during admin registration:', error);
+    res.status(500).json({ error: 'Failed to register admin', details: error?.message || String(error) });
   }
 });
 
@@ -38,8 +39,9 @@ router.post('/login', async (req: Request, res: Response) => {
 
     const token = jwt.sign({ adminId: admin.id }, process.env.JWT_SECRET || 'supersecret', { expiresIn: '1d' });
     res.json({ token, admin: { email: admin.email, balance: admin.balance } });
-  } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+  } catch (error: any) {
+    console.error('Error during admin login:', error);
+    res.status(500).json({ error: 'Failed to login admin', details: error?.message || String(error) });
   }
 });
 
@@ -67,8 +69,9 @@ router.get('/dashboard', async (req: Request, res: Response) => {
       likes: engagements._sum.likes || 0,
       telegramUploadId: admin.telegramUploadId
     });
-  } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+  } catch (error: any) {
+    console.error('Error fetching admin dashboard:', error);
+    res.status(500).json({ error: 'Failed to fetch dashboard data', details: error?.message || String(error) });
   }
 });
 
@@ -82,8 +85,9 @@ router.get('/analytics', async (req: Request, res: Response) => {
       take: 30
     });
     res.json(analytics);
-  } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+  } catch (error: any) {
+    console.error('Error fetching admin analytics:', error);
+    res.status(500).json({ error: 'Failed to fetch analytics', details: error?.message || String(error) });
   }
 });
 
@@ -117,8 +121,9 @@ router.post('/payouts', async (req: Request, res: Response) => {
     ]);
 
     res.json({ message: 'Payout requested successfully' });
-  } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+  } catch (error: any) {
+    console.error('Error requesting payout:', error);
+    res.status(500).json({ error: 'Failed to request payout', details: error?.message || String(error) });
   }
 });
 
@@ -149,8 +154,9 @@ router.post('/videos', async (req: Request, res: Response) => {
     });
     
     res.json(video);
-  } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+  } catch (error: any) {
+    console.error('Error creating video:', error);
+    res.status(500).json({ error: 'Failed to create video record', details: error?.message || String(error) });
   }
 });
 

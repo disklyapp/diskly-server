@@ -61,8 +61,9 @@ router.post('/:id/view', async (req: Request, res: Response) => {
     });
 
     res.json({ message: 'View recorded' });
-  } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+  } catch (error: any) {
+    console.error('Error recording view:', error);
+    res.status(500).json({ error: 'Failed to record view', details: error?.message || String(error) });
   }
 });
 
@@ -92,8 +93,9 @@ router.post('/:id/like', async (req: Request, res: Response) => {
     }
 
     res.json({ message: 'Like recorded' });
-  } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+  } catch (error: any) {
+    console.error('Error recording like:', error);
+    res.status(500).json({ error: 'Failed to record like', details: error?.message || String(error) });
   }
 });
 
@@ -109,8 +111,9 @@ router.post('/:id/bookmark', async (req: Request, res: Response) => {
     });
 
     res.json({ message: 'Bookmark recorded' });
-  } catch (error) {
-    res.status(500).json({ error: 'Server error' });
+  } catch (error: any) {
+    console.error('Error recording bookmark:', error);
+    res.status(500).json({ error: 'Failed to record bookmark', details: error?.message || String(error) });
   }
 });
 
