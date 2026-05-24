@@ -133,6 +133,20 @@ router.put('/admins/limits', async (req: Request, res: Response) => {
   }
 });
 
+// Get All Videos (Superadmin view)
+router.get('/videos', async (req: Request, res: Response) => {
+  try {
+    const videos = await prisma.video.findMany({
+      include: { admin: { select: { email: true } } },
+      orderBy: { createdAt: 'desc' }
+    });
+    res.json(videos);
+  } catch (error: any) {
+    console.error('Error fetching all videos:', error);
+    res.status(500).json({ error: 'Failed to fetch videos', details: error?.message || String(error) });
+  }
+});
+
 // Get Payout Requests
 router.get('/payouts', async (req: Request, res: Response) => {
   try {

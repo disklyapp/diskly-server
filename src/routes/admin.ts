@@ -7,6 +7,8 @@ import { adminAuth } from '../middleware/auth.js';
 import multer from 'multer';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import fs from 'fs';
+import ffmpeg from 'fluent-ffmpeg';
+import path from 'path';
 
 const uploadDir = 'uploads';
 if (!fs.existsSync(uploadDir)) {
@@ -177,6 +179,7 @@ router.post('/videos', upload.single('video'), async (req: Request, res: Respons
     return res.status(400).json({ error: 'Title is required' });
   }
 
+  let thumbPath = '';
   try {
     // Check limits
     const admin = await prisma.admin.findUnique({ where: { id: adminId } });
@@ -200,8 +203,29 @@ router.post('/videos', upload.single('video'), async (req: Request, res: Respons
     const downloadKey = nanoid(10);
     const fileExtension = file.originalname.split('.').pop();
     const objectKey = `${downloadKey}.${fileExtension}`;
+    const thumbObjectKey = `${downloadKey}_thumb.png`;
+    thumbPath = path.join(uploadDir, thumbObjectKey);
 
-    // Upload to Backblaze B2
+    // Extract Thumbnail using fluent-ffmpeg
+    try {
+      await new Promise<void>((resolve, reject) => {
+        ffmpeg(file.path)
+          .screenshots({
+            timestamps: ['00:00:01.000'],
+            filename: thumbObjectKey,
+            folder: uploadDir,
+            size: '320x240'
+          })
+          .on('end', () => resolve())
+          .on('error', (err) => reject(err));
+      });
+    } catch (ffmpegErr) {
+      console.error('Failed to generate thumbnail via ffmpeg:', ffmpegErr);
+      // We can continue without thumbnail if it fails, or we can choose to fail the request.
+      // Continuing is safer if ffmpeg isn't perfectly configured.
+    }
+
+    // Upload to Backblaze B2 (Video)
     const fileStream = fs.createReadStream(file.path);
     const uploadParams = {
       Bucket: process.env.B2_BUCKET_NAME || 'disklyserver',
@@ -210,32 +234,54 @@ router.post('/videos', upload.single('video'), async (req: Request, res: Respons
       ContentType: file.mimetype,
     };
 
+    // Upload to Backblaze B2 (Thumbnail)
+    let thumbUploadParams: any = null;
+    if (fs.existsSync(thumbPath)) {
+      const thumbStream = fs.createReadStream(thumbPath);
+      thumbUploadParams = {
+        Bucket: process.env.B2_BUCKET_NAME || 'disklyserver',
+        Key: thumbObjectKey,
+        Body: thumbStream,
+        ContentType: 'image/png',
+      };
+    }
+
     try {
-      await s3.send(new PutObjectCommand(uploadParams));
+      const uploadPromises = [s3.send(new PutObjectCommand(uploadParams))];
+      if (thumbUploadParams) {
+        uploadPromises.push(s3.send(new PutObjectCommand(thumbUploadParams)));
+      }
+      await Promise.all(uploadPromises);
     } catch (s3Error: any) {
       console.error('Detailed B2 Upload Error:', s3Error);
       fs.unlinkSync(file.path);
+      if (fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath);
       return res.status(500).json({ error: 'Failed to upload video to storage', details: s3Error?.message || String(s3Error) });
     }
 
     let streamUrl = '';
+    let finalThumbnailUrl = thumbnailUrl || '';
     const domain = process.env.CLOUDFLARE_DOMAIN || '';
     if (domain.includes('/file/')) {
       streamUrl = `${domain.replace(/\/$/, '')}/${objectKey}`;
+      if (!thumbnailUrl && fs.existsSync(thumbPath)) finalThumbnailUrl = `${domain.replace(/\/$/, '')}/${thumbObjectKey}`;
     } else {
       streamUrl = `https://${domain.replace(/\/$/, '')}/file/${process.env.B2_BUCKET_NAME}/${objectKey}`;
+      if (!thumbnailUrl && fs.existsSync(thumbPath)) finalThumbnailUrl = `https://${domain.replace(/\/$/, '')}/file/${process.env.B2_BUCKET_NAME}/${thumbObjectKey}`;
     }
 
     const video = await prisma.video.create({
-      data: { title, streamUrl, downloadKey, thumbnailUrl: thumbnailUrl || '', adminId }
+      data: { title, streamUrl, downloadKey, thumbnailUrl: finalThumbnailUrl, adminId }
     });
     
-    // Delete local temp file
+    // Delete local temp files
     fs.unlinkSync(file.path);
+    if (fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath);
 
     res.json(video);
   } catch (error: any) {
     if (file && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+    if (thumbPath && fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath);
     console.error('Error creating video:', error);
     res.status(500).json({ error: 'Failed to create video record', details: error?.message || String(error) });
   }
