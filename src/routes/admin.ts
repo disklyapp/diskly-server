@@ -164,6 +164,42 @@ router.get('/videos', async (req: Request, res: Response) => {
   }
 });
 
+// Get Single Video
+router.get('/videos/:id', async (req: Request, res: Response) => {
+  const adminId = (req as any).adminId;
+  const videoId = Number(req.params.id);
+  try {
+    const video = await prisma.video.findFirst({
+      where: { id: videoId, adminId }
+    });
+    if (!video) return res.status(404).json({ error: 'Video not found' });
+    res.json(video);
+  } catch (error: any) {
+    console.error('Error fetching video:', error);
+    res.status(500).json({ error: 'Failed to fetch video', details: error?.message || String(error) });
+  }
+});
+
+// Delete Video
+router.delete('/videos/:id', async (req: Request, res: Response) => {
+  const adminId = (req as any).adminId;
+  const videoId = Number(req.params.id);
+  try {
+    const video = await prisma.video.findFirst({
+      where: { id: videoId, adminId }
+    });
+    if (!video) return res.status(404).json({ error: 'Video not found' });
+
+    // Optional: Delete from B2 here (requires deleteObject command)
+    // For now, just delete from DB
+    await prisma.video.delete({ where: { id: videoId } });
+    res.json({ message: 'Video deleted successfully' });
+  } catch (error: any) {
+    console.error('Error deleting video:', error);
+    res.status(500).json({ error: 'Failed to delete video', details: error?.message || String(error) });
+  }
+});
+
 // Upload Video to Backblaze B2
 router.post('/videos', upload.single('video'), async (req: Request, res: Response) => {
   const adminId = (req as any).adminId;
