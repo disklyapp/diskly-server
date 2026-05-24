@@ -4,6 +4,25 @@ import jwt from 'jsonwebtoken';
 import { nanoid } from 'nanoid';
 import prisma from '../config/prisma.js';
 import { adminAuth } from '../middleware/auth.js';
+import multer from 'multer';
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import fs from 'fs';
+
+const uploadDir = 'uploads';
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+const upload = multer({ dest: `${uploadDir}/` });
+
+const s3 = new S3Client({
+  endpoint: process.env.B2_ENDPOINT,
+  region: process.env.B2_REGION,
+  credentials: {
+    accessKeyId: process.env.B2_ACCESS_KEY_ID || '',
+    secretAccessKey: process.env.B2_SECRET_ACCESS_KEY || '',
+  },
+});
 
 const router = Router();
 
@@ -128,17 +147,44 @@ router.post('/payouts', async (req: Request, res: Response) => {
   }
 });
 
-// Upload Video dummy endpoint (Usually multipart/form-data via Multer + S3/B2 logic)
-router.post('/videos', async (req: Request, res: Response) => {
+// Get Admin Videos
+router.get('/videos', async (req: Request, res: Response) => {
   const adminId = (req as any).adminId;
-  const { title, streamUrl, downloadKey, thumbnailUrl } = req.body;
+  try {
+    const videos = await prisma.video.findMany({
+      where: { adminId },
+      orderBy: { createdAt: 'desc' }
+    });
+    res.json(videos);
+  } catch (error: any) {
+    console.error('Error fetching admin videos:', error);
+    res.status(500).json({ error: 'Failed to fetch videos', details: error?.message || String(error) });
+  }
+});
+
+// Upload Video to Backblaze B2
+router.post('/videos', upload.single('video'), async (req: Request, res: Response) => {
+  const adminId = (req as any).adminId;
+  const { title, thumbnailUrl } = req.body;
+  const file = req.file;
+
+  if (!file) {
+    return res.status(400).json({ error: 'Video file is required. Make sure to use multipart/form-data with a "video" field.' });
+  }
+
+  if (!title) {
+    fs.unlinkSync(file.path);
+    return res.status(400).json({ error: 'Title is required' });
+  }
 
   try {
     // Check limits
     const admin = await prisma.admin.findUnique({ where: { id: adminId } });
-    if (!admin) return res.status(404).json({ error: 'Admin not found' });
+    if (!admin) {
+      fs.unlinkSync(file.path);
+      return res.status(404).json({ error: 'Admin not found' });
+    }
 
-    // Assuming we do limit checks per day/month (a full implementation would query video count for today/this month)
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
@@ -147,15 +193,49 @@ router.post('/videos', async (req: Request, res: Response) => {
     });
 
     if (videosToday >= admin.dailyUploadLimit) {
+      fs.unlinkSync(file.path);
       return res.status(400).json({ error: 'Daily upload limit reached' });
     }
 
+    const downloadKey = nanoid(10);
+    const fileExtension = file.originalname.split('.').pop();
+    const objectKey = `${downloadKey}.${fileExtension}`;
+
+    // Upload to Backblaze B2
+    const fileStream = fs.createReadStream(file.path);
+    const uploadParams = {
+      Bucket: process.env.B2_BUCKET_NAME || 'disklyserver',
+      Key: objectKey,
+      Body: fileStream,
+      ContentType: file.mimetype,
+    };
+
+    try {
+      await s3.send(new PutObjectCommand(uploadParams));
+    } catch (s3Error: any) {
+      console.error('Detailed B2 Upload Error:', s3Error);
+      fs.unlinkSync(file.path);
+      return res.status(500).json({ error: 'Failed to upload video to storage', details: s3Error?.message || String(s3Error) });
+    }
+
+    let streamUrl = '';
+    const domain = process.env.CLOUDFLARE_DOMAIN || '';
+    if (domain.includes('/file/')) {
+      streamUrl = `${domain.replace(/\/$/, '')}/${objectKey}`;
+    } else {
+      streamUrl = `https://${domain.replace(/\/$/, '')}/file/${process.env.B2_BUCKET_NAME}/${objectKey}`;
+    }
+
     const video = await prisma.video.create({
-      data: { title, streamUrl, downloadKey, thumbnailUrl, adminId }
+      data: { title, streamUrl, downloadKey, thumbnailUrl: thumbnailUrl || '', adminId }
     });
     
+    // Delete local temp file
+    fs.unlinkSync(file.path);
+
     res.json(video);
   } catch (error: any) {
+    if (file && fs.existsSync(file.path)) fs.unlinkSync(file.path);
     console.error('Error creating video:', error);
     res.status(500).json({ error: 'Failed to create video record', details: error?.message || String(error) });
   }
