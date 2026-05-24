@@ -85,12 +85,34 @@ router.put('/settings', async (req: Request, res: Response) => {
 router.get('/admins', async (req: Request, res: Response) => {
   try {
     const admins = await prisma.admin.findMany({
-      select: { id: true, email: true, telegramUploadId: true, dailyUploadLimit: true, monthlyUploadLimit: true, balance: true, totalEarnings: true, createdAt: true }
+      select: { id: true, email: true, telegramUploadId: true, dailyUploadLimit: true, monthlyUploadLimit: true, balance: true, totalEarnings: true, isActive: true, createdAt: true }
     });
     res.json(admins);
   } catch (error: any) {
     console.error('Error fetching admins:', error);
     res.status(500).json({ error: 'Failed to fetch admins list', details: error?.message || String(error) });
+  }
+});
+
+// Update admin status (cancel / activate)
+router.put('/admins/:id/status', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { isActive } = req.body;
+  
+  if (typeof isActive !== 'boolean') {
+    return res.status(400).json({ error: 'isActive must be a boolean' });
+  }
+
+  try {
+    const updated = await prisma.admin.update({
+      where: { id: Number(id) },
+      data: { isActive },
+      select: { id: true, email: true, isActive: true }
+    });
+    res.json({ message: `Admin account ${isActive ? 'activated' : 'deactivated'} successfully`, admin: updated });
+  } catch (error: any) {
+    console.error('Error updating admin status:', error);
+    res.status(500).json({ error: 'Failed to update admin status', details: error?.message || String(error) });
   }
 });
 

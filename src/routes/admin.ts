@@ -33,6 +33,7 @@ router.post('/login', async (req: Request, res: Response) => {
   try {
     const admin = await prisma.admin.findUnique({ where: { email } });
     if (!admin) return res.status(400).json({ error: 'Invalid credentials' });
+    if (!admin.isActive) return res.status(403).json({ error: 'Account has been deactivated' });
 
     const valid = await bcrypt.compare(password, admin.password);
     if (!valid) return res.status(400).json({ error: 'Invalid credentials' });
