@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
-import prisma from '../config/prisma';
-import { superAdminAuth } from '../middleware/auth';
+import prisma from '../config/prisma.js';
+import { superAdminAuth } from '../middleware/auth.js';
 import jwt from 'jsonwebtoken';
 
 const router = Router();

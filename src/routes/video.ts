@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import prisma from '../config/prisma';
+import prisma from '../config/prisma.js';
 
 const router = Router();
 
@@ -16,7 +16,7 @@ router.post('/:id/view', async (req: Request, res: Response) => {
     const earningPerView = (setting?.earningRatePer1000Views || 1.0) / 1000.0;
 
     // We do this inside a transaction to ensure data consistency
-    await prisma.$transaction(async (prismaClient) => {
+    await prisma.$transaction(async (prismaClient: any) => {
       // 1. Increment Video view
       await prismaClient.video.update({
         where: { id: videoId },

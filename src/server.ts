@@ -3,9 +3,9 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 dotenv.config();
 
-import superadminRoutes from './routes/superadmin';
-import adminRoutes from './routes/admin';
-import videoRoutes from './routes/video';
+import superadminRoutes from './routes/superadmin.js';
+import adminRoutes from './routes/admin.js';
+import videoRoutes from './routes/video.js';
 
 const app = express();
 

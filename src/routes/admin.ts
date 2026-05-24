@@ -2,8 +2,8 @@ import { Router, Request, Response } from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import { nanoid } from 'nanoid';
-import prisma from '../config/prisma';
-import { adminAuth } from '../middleware/auth';
+import prisma from '../config/prisma.js';
+import { adminAuth } from '../middleware/auth.js';
 
 const router = Router();
 
