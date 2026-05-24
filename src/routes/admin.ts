@@ -8,7 +8,12 @@ import multer from 'multer';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import fs from 'fs';
 import ffmpeg from 'fluent-ffmpeg';
+import ffmpegStatic from 'ffmpeg-static';
 import path from 'path';
+
+if (ffmpegStatic) {
+  ffmpeg.setFfmpegPath(ffmpegStatic as unknown as string);
+}
 
 const uploadDir = 'uploads';
 if (!fs.existsSync(uploadDir)) {
