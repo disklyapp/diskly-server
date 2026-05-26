@@ -21,6 +21,7 @@ model Admin {
   name               String?
   profilePic         String?
   telegramUploadId   String?  @unique
+  telegramChatId     String?  @unique
   dailyUploadLimit   Int      @default(10)
   monthlyUploadLimit Int      @default(300)
   balance            Float    @default(0.0)

@@ -7,6 +7,8 @@ import superadminRoutes from './routes/superadmin.js';
 import adminRoutes from './routes/admin.js';
 import videoRoutes from './routes/video.js';
 
+import { setupTelegramBot } from './bot/telegram.js';
+
 const app = express();
 
 app.use(cors());
@@ -24,4 +26,7 @@ app.get('/health', (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  
+  // Start Telegram Bot
+  setupTelegramBot();
 });
