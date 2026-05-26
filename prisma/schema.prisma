@@ -18,6 +18,8 @@ model Admin {
   id                 Int      @id @default(autoincrement())
   email              String   @unique
   password           String
+  name               String?
+  profilePic         String?
   telegramUploadId   String?  @unique
   dailyUploadLimit   Int      @default(10)
   monthlyUploadLimit Int      @default(300)
@@ -33,6 +35,7 @@ model Admin {
 model Video {
   id           Int      @id @default(autoincrement())
   title        String
+  description  String?
   streamUrl    String
   downloadKey  String
   thumbnailUrl String

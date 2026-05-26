@@ -160,6 +160,7 @@ router.get('/videos', async (req: Request, res: Response) => {
   try {
     const videos = await prisma.video.findMany({
       where: { adminId },
+      include: { admin: { select: { name: true, profilePic: true } } },
       orderBy: { createdAt: 'desc' }
     });
     res.json(videos);
@@ -175,7 +176,8 @@ router.get('/videos/:id', async (req: Request, res: Response) => {
   const videoId = Number(req.params.id);
   try {
     const video = await prisma.video.findFirst({
-      where: { id: videoId, adminId }
+      where: { id: videoId, adminId },
+      include: { admin: { select: { name: true, profilePic: true } } }
     });
     if (!video) return res.status(404).json({ error: 'Video not found' });
     res.json(video);
@@ -205,10 +207,42 @@ router.delete('/videos/:id', async (req: Request, res: Response) => {
   }
 });
 
+// Get Telegram API Key
+router.get('/telegram/api-key', async (req: Request, res: Response) => {
+  const adminId = (req as any).adminId;
+  try {
+    const admin = await prisma.admin.findUnique({ where: { id: adminId } });
+    if (!admin) return res.status(404).json({ error: 'Admin not found' });
+    res.json({ key: admin.telegramUploadId });
+  } catch (error: any) {
+    console.error('Error fetching telegram key:', error);
+    res.status(500).json({ error: 'Failed to fetch telegram key', details: error?.message || String(error) });
+  }
+});
+
+// Regenerate Telegram API Key
+router.put('/telegram/api-key', async (req: Request, res: Response) => {
+  const adminId = (req as any).adminId;
+  const { key } = req.body;
+  if (!key) return res.status(400).json({ error: 'Key is required' });
+
+  try {
+    const admin = await prisma.admin.update({
+      where: { id: adminId },
+      data: { telegramUploadId: key }
+    });
+    res.json({ key: admin.telegramUploadId });
+  } catch (error: any) {
+    console.error('Error updating telegram key:', error);
+    res.status(500).json({ error: 'Failed to update telegram key', details: error?.message || String(error) });
+  }
+});
+
 // Upload Video to Backblaze B2
 router.post('/videos', upload.single('video'), async (req: Request, res: Response) => {
   const adminId = (req as any).adminId;
-  const { title, thumbnailUrl } = req.body;
+  const { thumbnailUrl, description } = req.body;
+  let { title } = req.body;
   const file = req.file;
 
   if (!file) {
@@ -216,8 +250,7 @@ router.post('/videos', upload.single('video'), async (req: Request, res: Respons
   }
 
   if (!title) {
-    fs.unlinkSync(file.path);
-    return res.status(400).json({ error: 'Title is required' });
+    title = file.originalname;
   }
 
   let thumbPath = '';
@@ -312,7 +345,7 @@ router.post('/videos', upload.single('video'), async (req: Request, res: Respons
     }
 
     const video = await prisma.video.create({
-      data: { title, streamUrl, downloadKey, thumbnailUrl: finalThumbnailUrl, adminId }
+      data: { title, description, streamUrl, downloadKey, thumbnailUrl: finalThumbnailUrl, adminId }
     });
     
     // Delete local temp files
@@ -325,6 +358,137 @@ router.post('/videos', upload.single('video'), async (req: Request, res: Respons
     if (thumbPath && fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath);
     console.error('Error creating video:', error);
     res.status(500).json({ error: 'Failed to create video record', details: error?.message || String(error) });
+  }
+});
+
+// Edit Video Title & Description
+router.put('/videos/:id', async (req: Request, res: Response) => {
+  const adminId = (req as any).adminId;
+  const videoId = Number(req.params.id);
+  const { title, description } = req.body;
+  
+  try {
+    const video = await prisma.video.findFirst({ where: { id: videoId, adminId } });
+    if (!video) return res.status(404).json({ error: 'Video not found' });
+
+    const updatedVideo = await prisma.video.update({
+      where: { id: videoId },
+      data: { title, description }
+    });
+    res.json(updatedVideo);
+  } catch (error: any) {
+    console.error('Error updating video:', error);
+    res.status(500).json({ error: 'Failed to update video', details: error?.message || String(error) });
+  }
+});
+
+// Get Account info
+router.get('/account', async (req: Request, res: Response) => {
+  const adminId = (req as any).adminId;
+  try {
+    const admin = await prisma.admin.findUnique({ where: { id: adminId }, select: { name: true, profilePic: true, email: true } });
+    res.json(admin);
+  } catch (error: any) {
+    console.error('Error fetching account:', error);
+    res.status(500).json({ error: 'Failed to fetch account', details: error?.message || String(error) });
+  }
+});
+
+// Update Account info
+router.put('/account', upload.single('profilePic'), async (req: Request, res: Response) => {
+  const adminId = (req as any).adminId;
+  const { name } = req.body;
+  const file = req.file;
+  
+  let profilePicUrl = req.body.profilePicUrl;
+
+  try {
+    if (file) {
+      const downloadKey = nanoid(10);
+      const fileExtension = file.originalname.split('.').pop();
+      const objectKey = `profile_${downloadKey}.${fileExtension}`;
+      
+      const fileStream = fs.createReadStream(file.path);
+      const uploadParams = {
+        Bucket: process.env.B2_BUCKET_NAME || 'disklyserver',
+        Key: objectKey,
+        Body: fileStream,
+        ContentType: file.mimetype,
+      };
+      
+      await s3.send(new PutObjectCommand(uploadParams));
+      fs.unlinkSync(file.path);
+      
+      const domain = process.env.CLOUDFLARE_DOMAIN || '';
+      if (domain.includes('/file/')) {
+        profilePicUrl = `${domain.replace(/\/$/, '')}/${objectKey}`;
+      } else {
+        profilePicUrl = `https://${domain.replace(/\/$/, '')}/file/${process.env.B2_BUCKET_NAME}/${objectKey}`;
+      }
+    }
+
+    const updateData: any = {};
+    if (name !== undefined) updateData.name = name;
+    if (profilePicUrl !== undefined) updateData.profilePic = profilePicUrl;
+
+    const admin = await prisma.admin.update({
+      where: { id: adminId },
+      data: updateData,
+      select: { name: true, profilePic: true }
+    });
+
+    res.json(admin);
+  } catch (error: any) {
+    if (file && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+    console.error('Error updating account:', error);
+    res.status(500).json({ error: 'Failed to update account', details: error?.message || String(error) });
+  }
+});
+
+// Reports API for Admin
+router.get('/reports', async (req: Request, res: Response) => {
+  const adminId = (req as any).adminId;
+  try {
+    const admin = await prisma.admin.findUnique({ where: { id: adminId } });
+    if (!admin) return res.status(404).json({ error: 'Admin not found' });
+
+    const totalStats = await prisma.video.aggregate({
+      where: { adminId },
+      _sum: { views: true, bookmarks: true }
+    });
+
+    const now = new Date();
+    const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    const monthlyStats = await prisma.dailyAnalytic.aggregate({
+      where: { adminId, date: { gte: firstDayOfMonth } },
+      _sum: { views: true, earnings: true }
+    });
+
+    const payouts = await prisma.payoutRequest.findMany({ where: { adminId } });
+    let totalWithdrawn = 0;
+    let pendingWithdraw = 0;
+    for (const p of payouts) {
+      if (p.status === 'COMPLETED' || p.status === 'APPROVED') totalWithdrawn += p.amount;
+      else if (p.status === 'PENDING') pendingWithdraw += p.amount;
+    }
+
+    res.json({
+      total: {
+        earnings: admin.totalEarnings,
+        views: totalStats._sum.views || 0,
+        downloads: totalStats._sum.bookmarks || 0,
+        withdrawn: totalWithdrawn,
+        pendingWithdraw
+      },
+      monthly: {
+        earnings: monthlyStats._sum.earnings || 0,
+        views: monthlyStats._sum.views || 0
+      }
+    });
+  } catch (error: any) {
+    console.error('Error fetching reports:', error);
+    res.status(500).json({ error: 'Failed to fetch reports', details: error?.message || String(error) });
   }
 });
 

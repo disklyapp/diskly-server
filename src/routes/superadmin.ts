@@ -25,7 +25,9 @@ router.use(superAdminAuth);
 router.get('/dashboard', async (req: Request, res: Response) => {
   try {
     const totalAdmins = await prisma.admin.count();
+    const activeAdmins = await prisma.admin.count({ where: { isActive: true } });
     const totalVideos = await prisma.video.count();
+    
     const totalEarningsResult = await prisma.admin.aggregate({
       _sum: { totalEarnings: true }
     });
@@ -37,6 +39,7 @@ router.get('/dashboard', async (req: Request, res: Response) => {
 
     res.json({
       totalAdmins,
+      activeAdmins,
       totalVideos,
       totalEarnings,
       engagements: {
@@ -48,6 +51,40 @@ router.get('/dashboard', async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error('Error fetching superadmin dashboard:', error);
     res.status(500).json({ error: 'Failed to fetch superadmin dashboard data', details: error?.message || String(error) });
+  }
+});
+
+// Get Reports (Daily System Metrics)
+router.get('/reports', async (req: Request, res: Response) => {
+  try {
+    // Group DailyAnalytics by date
+    const dailyStats = await prisma.dailyAnalytic.groupBy({
+      by: ['date'],
+      _sum: {
+        views: true,
+        likes: true,
+        earnings: true
+      },
+      orderBy: { date: 'desc' },
+      take: 30 // Last 30 days
+    });
+
+    const totalVideos = await prisma.video.count();
+    const totalEngagements = await prisma.video.aggregate({
+      _sum: { views: true, bookmarks: true } // bookmarks act as downloads
+    });
+
+    res.json({
+      dailyStats,
+      totals: {
+        totalVideos,
+        totalViews: totalEngagements._sum.views || 0,
+        totalDownloads: totalEngagements._sum.bookmarks || 0
+      }
+    });
+  } catch (error: any) {
+    console.error('Error fetching superadmin reports:', error);
+    res.status(500).json({ error: 'Failed to fetch superadmin reports', details: error?.message || String(error) });
   }
 });
 
