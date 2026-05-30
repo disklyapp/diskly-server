@@ -31,14 +31,15 @@ export const setupTelegramBot = () => {
 
   const bot = new Telegraf(token);
 
-  // Command: /start <telegramUploadId>
-  bot.start(async (ctx) => {
-    const args = ctx.message.text.split(' ');
-    if (args.length !== 2) {
-      return ctx.reply('Welcome! To link your account, please use: /start <Your_Telegram_API_Key>');
-    }
+  bot.start((ctx) => {
+    return ctx.reply('Welcome to Diskly. We are a premier video streaming platform.\nYou can use this bot to upload videos directly to your account.\n\nPlease just paste your Telegram API Key below to link your account.');
+  });
 
-    const telegramUploadId = args[1];
+  bot.on(message('text'), async (ctx) => {
+    const text = ctx.message.text.trim();
+    if (text.startsWith('/')) return; // Ignore commands
+
+    const telegramUploadId = text;
 
     try {
       const admin = await prisma.admin.findUnique({
@@ -167,13 +168,15 @@ export const setupTelegramBot = () => {
         if (localThumbPath) finalThumbnailUrl = `https://${domain.replace(/\/$/, '')}/file/${process.env.B2_BUCKET_NAME}/${thumbObjectKey}`;
       }
 
-      // Use caption as title if available, otherwise generic
-      const title = ctx.message.caption || video.file_name || 'Telegram Upload';
+      // Use default file name as title and "NA" as description
+      const title = video.file_name || 'Telegram Upload';
+      const description = 'NA';
 
       // 6. Create Database Record
       const videoRecord = await prisma.video.create({
         data: { 
           title, 
+          description,
           streamUrl, 
           downloadKey, 
           thumbnailUrl: finalThumbnailUrl, 
