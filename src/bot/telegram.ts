@@ -1,4 +1,4 @@
-import { Telegraf } from 'telegraf';
+import { Telegraf, Markup } from 'telegraf';
 import { message } from 'telegraf/filters';
 import prisma from '../config/prisma.js';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
@@ -21,6 +21,8 @@ if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
+const userStates: Record<string, 'IDLE' | 'AWAITING_UPLOAD_VIDEO' | 'AWAITING_DISKLY_LINK' | 'AWAITING_TERABOX_LINK'> = {};
+
 export const setupTelegramBot = () => {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   
@@ -38,35 +40,188 @@ export const setupTelegramBot = () => {
   bot.on(message('text'), async (ctx) => {
     const text = ctx.message.text.trim();
     if (text.startsWith('/')) return; // Ignore commands
-
-    const telegramUploadId = text;
+    
+    const telegramChatId = ctx.chat.id.toString();
+    const state = userStates[telegramChatId] || 'IDLE';
 
     try {
-      const admin = await prisma.admin.findUnique({
-        where: { telegramUploadId }
+      let admin = await prisma.admin.findUnique({
+        where: { telegramChatId }
       });
 
       if (!admin) {
-        return ctx.reply('❌ Invalid Telegram API Key. Please check your admin dashboard and try again.');
+        // Not linked yet, try to link with API Key
+        admin = await prisma.admin.findUnique({
+          where: { telegramUploadId: text }
+        });
+
+        if (!admin) {
+          return ctx.reply('❌ Invalid Telegram API Key. Please check your admin dashboard and try again.');
+        }
+
+        await prisma.admin.update({
+          where: { id: admin.id },
+          data: { telegramChatId }
+        });
+
+        userStates[telegramChatId] = 'IDLE';
+        const keyboard = Markup.inlineKeyboard([
+          [Markup.button.callback('📤 Upload Video', 'opt_upload')],
+          [Markup.button.callback('🔄 Convert Diskly Link', 'opt_diskly')],
+          [Markup.button.callback('📥 Convert Terabox Link', 'opt_terabox')],
+        ]);
+        return ctx.reply(`✅ Successfully linked to account: ${admin.email}\nChoose an option below:`, keyboard);
       }
 
-      // Link account
-      await prisma.admin.update({
-        where: { id: admin.id },
-        data: { telegramChatId: ctx.chat.id.toString() }
-      });
+      // Handle states
+      if (state === 'AWAITING_DISKLY_LINK') {
+        const match = text.match(/diskly\.in\/([a-zA-Z0-9_-]+)/);
+        const targetDownloadKey = match ? match[1] : text;
 
-      ctx.reply(`✅ Successfully linked to account: ${admin.email}\nYou can now send videos directly to this bot to upload them to Diskly!`);
+        const originalVideo = await prisma.video.findFirst({ where: { downloadKey: targetDownloadKey } });
+        if (!originalVideo) {
+          return ctx.reply("❌ Video not found for that link.");
+        }
+
+        const newDownloadKey = nanoid(10);
+        await prisma.video.create({
+          data: {
+            title: originalVideo.title,
+            description: originalVideo.description,
+            streamUrl: originalVideo.streamUrl,
+            downloadKey: newDownloadKey,
+            thumbnailUrl: originalVideo.thumbnailUrl,
+            adminId: admin.id
+          }
+        });
+
+        userStates[telegramChatId] = 'IDLE';
+        return ctx.reply(`✅ Video copied successfully!\n\n🔗 https://diskly.in/${newDownloadKey}`);
+      }
+
+      if (state === 'AWAITING_TERABOX_LINK') {
+        const processingMsg = await ctx.reply("🔍 Fetching TeraBox data...");
+        
+        try {
+          const response = await fetch('https://xapiverse.com/api/terabox', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'xAPIverse-Key': process.env.TERABOX_API_KEY || ''
+            },
+            body: JSON.stringify({ url: text })
+          });
+
+          const data = await response.json();
+          if (data.status !== 'success' || !data.list || data.list.length === 0) {
+            return ctx.telegram.editMessageText(ctx.chat.id, processingMsg.message_id, undefined, "❌ Failed to fetch video from Terabox link.");
+          }
+
+          const fileInfo = data.list[0];
+          const downloadUrl = fileInfo.normal_dlink || fileInfo.stream_url || fileInfo.fast_stream_url?.['1080p'] || fileInfo.fast_stream_url?.['720p'] || fileInfo.fast_stream_url?.['480p'];
+          
+          if (!downloadUrl) {
+            return ctx.telegram.editMessageText(ctx.chat.id, processingMsg.message_id, undefined, "❌ Could not find a valid download link from Terabox.");
+          }
+
+          await ctx.telegram.editMessageText(ctx.chat.id, processingMsg.message_id, undefined, "⬇️ Downloading video from Terabox...");
+
+          const downloadKey = nanoid(10);
+          const ext = fileInfo.name ? fileInfo.name.split('.').pop() : 'mp4';
+          const objectKey = `${downloadKey}.${ext}`;
+          const localFilePath = path.join(uploadDir, objectKey);
+          
+          const downloadResponse = await fetch(downloadUrl);
+          if (!downloadResponse.ok) throw new Error('Failed to download from Terabox');
+          
+          const arrayBuffer = await downloadResponse.arrayBuffer();
+          const buffer = Buffer.from(arrayBuffer);
+          fs.writeFileSync(localFilePath, buffer);
+
+          await ctx.telegram.editMessageText(ctx.chat.id, processingMsg.message_id, undefined, "☁️ Uploading to Storage...");
+
+          const fileStream = fs.createReadStream(localFilePath);
+          const uploadParams = {
+            Bucket: process.env.B2_BUCKET_NAME || 'disklyserver',
+            Key: objectKey,
+            Body: fileStream,
+            ContentType: 'video/mp4',
+          };
+
+          await s3.send(new PutObjectCommand(uploadParams));
+
+          let streamUrl = '';
+          const domain = process.env.CLOUDFLARE_DOMAIN || '';
+          if (domain.includes('/file/')) {
+            streamUrl = `${domain.replace(/\/$/, '')}/${objectKey}`;
+          } else {
+            streamUrl = `https://${domain.replace(/\/$/, '')}/file/${process.env.B2_BUCKET_NAME}/${objectKey}`;
+          }
+
+          await prisma.video.create({
+            data: {
+              title: fileInfo.name || "Terabox Video",
+              description: "NA",
+              streamUrl,
+              downloadKey,
+              thumbnailUrl: "",
+              adminId: admin.id
+            }
+          });
+
+          userStates[telegramChatId] = 'IDLE';
+          if (fs.existsSync(localFilePath)) fs.unlinkSync(localFilePath);
+
+          return ctx.telegram.editMessageText(ctx.chat.id, processingMsg.message_id, undefined, `✅ Video uploaded successfully!\n\n🔗 https://diskly.in/${downloadKey}`);
+        } catch (error) {
+          console.error('Error handling terabox link:', error);
+          return ctx.telegram.editMessageText(ctx.chat.id, processingMsg.message_id, undefined, "❌ Error processing Terabox link.");
+        }
+      }
+
+      // Default
+      const keyboard = Markup.inlineKeyboard([
+        [Markup.button.callback('📤 Upload Video', 'opt_upload')],
+        [Markup.button.callback('🔄 Convert Diskly Link', 'opt_diskly')],
+        [Markup.button.callback('📥 Convert Terabox Link', 'opt_terabox')],
+      ]);
+      return ctx.reply("Choose an option:", keyboard);
+
     } catch (error) {
-      console.error('Error linking telegram account:', error);
-      ctx.reply('❌ An error occurred while linking your account.');
+      console.error('Error handling text input:', error);
+      ctx.reply('❌ An error occurred.');
     }
+  });
+
+  bot.action('opt_upload', async (ctx) => {
+    const telegramChatId = ctx.chat?.id.toString();
+    if (!telegramChatId) return;
+    userStates[telegramChatId] = 'AWAITING_UPLOAD_VIDEO';
+    await ctx.reply("📤 Please send the video you want to upload.");
+    await ctx.answerCbQuery();
+  });
+
+  bot.action('opt_diskly', async (ctx) => {
+    const telegramChatId = ctx.chat?.id.toString();
+    if (!telegramChatId) return;
+    userStates[telegramChatId] = 'AWAITING_DISKLY_LINK';
+    await ctx.reply("🔄 Send the Diskly link (e.g. diskly.in/xyz123) to copy.");
+    await ctx.answerCbQuery();
+  });
+
+  bot.action('opt_terabox', async (ctx) => {
+    const telegramChatId = ctx.chat?.id.toString();
+    if (!telegramChatId) return;
+    userStates[telegramChatId] = 'AWAITING_TERABOX_LINK';
+    await ctx.reply("📥 Send the Terabox link to download and upload.");
+    await ctx.answerCbQuery();
   });
 
   // Handle Video Uploads
   bot.on(message('video'), async (ctx) => {
     try {
       const telegramChatId = ctx.chat.id.toString();
+      const state = userStates[telegramChatId] || 'IDLE';
       
       const admin = await prisma.admin.findUnique({
         where: { telegramChatId }
@@ -74,6 +229,10 @@ export const setupTelegramBot = () => {
 
       if (!admin) {
         return ctx.reply('❌ Your account is not linked. Please send /start <Your_Telegram_API_Key> to link your account first.');
+      }
+
+      if (state !== 'AWAITING_UPLOAD_VIDEO') {
+        return ctx.reply('❌ Please select "Upload Video" from the menu first.');
       }
 
       if (!admin.isActive) {
@@ -187,6 +346,8 @@ export const setupTelegramBot = () => {
       // Cleanup local files
       fs.unlinkSync(localFilePath);
       if (localThumbPath) fs.unlinkSync(localThumbPath);
+
+      userStates[telegramChatId] = 'IDLE';
 
       // 7. Reply Success
       const finalLink = `https://diskly.in/${downloadKey}`;
