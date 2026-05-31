@@ -11,7 +11,7 @@ router.get('/:key', async (req: Request, res: Response) => {
       where: { downloadKey: key as string },
       select: { 
         title: true, streamUrl: true, thumbnailUrl: true, views: true, likes: true, bookmarks: true, createdAt: true, downloadKey: true,
-        admin: { select: { name: true, email: true, avatar: true } }
+        admin: { select: { name: true, email: true, profilePic: true } }
       }
     });
     if (!video) return res.status(404).json({ error: 'Video not found' });
@@ -32,7 +32,7 @@ router.post('/batch', async (req: Request, res: Response) => {
       where: { downloadKey: { in: keys } },
       select: { 
         title: true, streamUrl: true, thumbnailUrl: true, views: true, likes: true, bookmarks: true, createdAt: true, downloadKey: true,
-        admin: { select: { name: true, email: true, avatar: true } }
+        admin: { select: { name: true, email: true, profilePic: true } }
       }
     });
     res.json(videos);
