@@ -138,6 +138,22 @@ export const setupTelegramBot = () => {
           const buffer = Buffer.from(arrayBuffer);
           fs.writeFileSync(localFilePath, buffer);
 
+          let thumbObjectKey = '';
+          let localThumbPath = '';
+          if (fileInfo.thumbnail) {
+            try {
+              const thumbResponse = await fetch(fileInfo.thumbnail);
+              if (thumbResponse.ok) {
+                const thumbBuffer = Buffer.from(await thumbResponse.arrayBuffer());
+                thumbObjectKey = `${downloadKey}_thumb.jpg`;
+                localThumbPath = path.join(uploadDir, thumbObjectKey);
+                fs.writeFileSync(localThumbPath, thumbBuffer);
+              }
+            } catch (err) {
+              console.error("Failed to download terabox thumbnail", err);
+            }
+          }
+
           await ctx.telegram.editMessageText(ctx.chat.id, processingMsg.message_id, undefined, "☁️ Uploading to Storage...");
 
           const fileStream = fs.createReadStream(localFilePath);
@@ -148,14 +164,30 @@ export const setupTelegramBot = () => {
             ContentType: 'video/mp4',
           };
 
-          await s3.send(new PutObjectCommand(uploadParams));
+          const uploadPromises = [s3.send(new PutObjectCommand(uploadParams))];
+
+          if (localThumbPath) {
+            const thumbStream = fs.createReadStream(localThumbPath);
+            const thumbUploadParams = {
+              Bucket: process.env.B2_BUCKET_NAME || 'disklyserver',
+              Key: thumbObjectKey,
+              Body: thumbStream,
+              ContentType: 'image/jpeg',
+            };
+            uploadPromises.push(s3.send(new PutObjectCommand(thumbUploadParams)));
+          }
+
+          await Promise.all(uploadPromises);
 
           let streamUrl = '';
+          let finalThumbnailUrl = '';
           const domain = process.env.CLOUDFLARE_DOMAIN || '';
           if (domain.includes('/file/')) {
             streamUrl = `${domain.replace(/\/$/, '')}/${objectKey}`;
+            if (localThumbPath) finalThumbnailUrl = `${domain.replace(/\/$/, '')}/${thumbObjectKey}`;
           } else {
             streamUrl = `https://${domain.replace(/\/$/, '')}/file/${process.env.B2_BUCKET_NAME}/${objectKey}`;
+            if (localThumbPath) finalThumbnailUrl = `https://${domain.replace(/\/$/, '')}/file/${process.env.B2_BUCKET_NAME}/${thumbObjectKey}`;
           }
 
           await prisma.video.create({
@@ -164,13 +196,14 @@ export const setupTelegramBot = () => {
               description: "NA",
               streamUrl,
               downloadKey,
-              thumbnailUrl: "",
+              thumbnailUrl: finalThumbnailUrl,
               adminId: admin.id
             }
           });
 
           userStates[telegramChatId] = 'IDLE';
           if (fs.existsSync(localFilePath)) fs.unlinkSync(localFilePath);
+          if (localThumbPath && fs.existsSync(localThumbPath)) fs.unlinkSync(localThumbPath);
 
           return ctx.telegram.editMessageText(ctx.chat.id, processingMsg.message_id, undefined, `✅ Video uploaded successfully!\n\n🔗 https://diskly.in/${downloadKey}`);
         } catch (error) {
