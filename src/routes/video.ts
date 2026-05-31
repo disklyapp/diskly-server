@@ -9,7 +9,10 @@ router.get('/:key', async (req: Request, res: Response) => {
   try {
     const video = await prisma.video.findFirst({
       where: { downloadKey: key as string },
-      select: { title: true, streamUrl: true, thumbnailUrl: true, views: true, likes: true, bookmarks: true, createdAt: true, downloadKey: true }
+      select: { 
+        title: true, streamUrl: true, thumbnailUrl: true, views: true, likes: true, bookmarks: true, createdAt: true, downloadKey: true,
+        admin: { select: { name: true, email: true, avatar: true } }
+      }
     });
     if (!video) return res.status(404).json({ error: 'Video not found' });
     res.json(video);
@@ -27,7 +30,10 @@ router.post('/batch', async (req: Request, res: Response) => {
   try {
     const videos = await prisma.video.findMany({
       where: { downloadKey: { in: keys } },
-      select: { title: true, streamUrl: true, thumbnailUrl: true, views: true, likes: true, bookmarks: true, createdAt: true, downloadKey: true }
+      select: { 
+        title: true, streamUrl: true, thumbnailUrl: true, views: true, likes: true, bookmarks: true, createdAt: true, downloadKey: true,
+        admin: { select: { name: true, email: true, avatar: true } }
+      }
     });
     res.json(videos);
   } catch (error: any) {
