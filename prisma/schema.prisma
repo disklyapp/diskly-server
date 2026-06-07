@@ -27,6 +27,9 @@ model Admin {
   balance            Float    @default(0.0)
   totalEarnings      Float    @default(0.0)
   isActive           Boolean  @default(true)
+  telegramHeader     String?
+  telegramFooter     String?
+  telegramKeepText   Boolean  @default(true)
   videos             Video[]
   payouts            PayoutRequest[]
   analytics          DailyAnalytic[]
