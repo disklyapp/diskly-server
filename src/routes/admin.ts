@@ -493,7 +493,7 @@ router.post('/videos', upload.single('video'), async (req: Request, res: Respons
     }
 
     const video = await prisma.video.create({
-      data: { title, description, streamUrl, downloadKey, thumbnailUrl: finalThumbnailUrl, adminId }
+      data: { title, description, streamUrl, downloadKey, thumbnailUrl: finalThumbnailUrl, size: file.size, adminId }
     });
     
     // Delete local temp files
@@ -537,6 +537,7 @@ router.get('/account', async (req: Request, res: Response) => {
     const admin = await prisma.admin.findUnique({
       where: { id: adminId },
       select: {
+        id: true,
         name: true,
         profilePic: true,
         email: true,

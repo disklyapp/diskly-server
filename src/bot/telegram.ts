@@ -137,6 +137,7 @@ const processTeraboxLink = async (url: string, adminId: number): Promise<string>
       streamUrl,
       downloadKey,
       thumbnailUrl: finalThumbnailUrl,
+      size: buffer.length,
       adminId
     }
   });
@@ -165,6 +166,7 @@ const processDisklyLink = async (url: string, adminId: number): Promise<string> 
       streamUrl: originalVideo.streamUrl,
       downloadKey: newDownloadKey,
       thumbnailUrl: originalVideo.thumbnailUrl,
+      size: originalVideo.size,
       adminId
     }
   });
@@ -267,6 +269,7 @@ const processVideoMessage = async (ctx: any, video: any, adminId: number): Promi
       streamUrl, 
       downloadKey, 
       thumbnailUrl: finalThumbnailUrl, 
+      size: video.file_size || buffer.length,
       adminId: admin.id 
     }
   });
