@@ -3,6 +3,68 @@ import prisma from '../config/prisma.js';
 
 const router = Router();
 
+// Fetch latest notifications
+router.get('/notifications', async (req: Request, res: Response) => {
+  try {
+    const notifications = await prisma.notification.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 20
+    });
+    res.json(notifications);
+  } catch (error: any) {
+    console.error('Error fetching notifications:', error);
+    res.status(500).json({ error: 'Failed to fetch notifications', details: error?.message || String(error) });
+  }
+});
+
+// Fetch admin profile and their published videos
+router.get('/admin/:id', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  try {
+    const adminIdNum = Number(id);
+    if (isNaN(adminIdNum)) {
+      return res.status(400).json({ error: 'Invalid admin ID' });
+    }
+
+    const admin = await prisma.admin.findUnique({
+      where: { id: adminIdNum },
+      select: {
+        id: true,
+        name: true,
+        profilePic: true,
+        createdAt: true,
+        email: true
+      }
+    });
+
+    if (!admin) {
+      return res.status(404).json({ error: 'Admin not found' });
+    }
+
+    const videos = await prisma.video.findMany({
+      where: { adminId: adminIdNum },
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        streamUrl: true,
+        thumbnailUrl: true,
+        views: true,
+        likes: true,
+        bookmarks: true,
+        createdAt: true,
+        downloadKey: true
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    res.json({ admin, videos });
+  } catch (error: any) {
+    console.error('Error fetching admin profile:', error);
+    res.status(500).json({ error: 'Failed to fetch admin profile', details: error?.message || String(error) });
+  }
+});
+
 // Fetch Single Video
 router.get('/:key', async (req: Request, res: Response) => {
   const { key } = req.params;
@@ -11,7 +73,7 @@ router.get('/:key', async (req: Request, res: Response) => {
       where: { downloadKey: key as string },
       select: { 
         title: true, streamUrl: true, thumbnailUrl: true, views: true, likes: true, bookmarks: true, createdAt: true, downloadKey: true,
-        admin: { select: { name: true, email: true, profilePic: true } }
+        admin: { select: { id: true, name: true, email: true, profilePic: true, createdAt: true } }
       }
     });
     if (!video) return res.status(404).json({ error: 'Video not found' });
@@ -32,7 +94,7 @@ router.post('/batch', async (req: Request, res: Response) => {
       where: { downloadKey: { in: keys } },
       select: { 
         title: true, streamUrl: true, thumbnailUrl: true, views: true, likes: true, bookmarks: true, createdAt: true, downloadKey: true,
-        admin: { select: { name: true, email: true, profilePic: true } }
+        admin: { select: { id: true, name: true, email: true, profilePic: true, createdAt: true } }
       }
     });
     res.json(videos);

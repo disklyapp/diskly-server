@@ -74,3 +74,10 @@ model DailyAnalytic {
 
   @@unique([adminId, date])
 }
+
+model Notification {
+  id        Int      @id @default(autoincrement())
+  title     String
+  message   String
+  createdAt DateTime @default(now())
+}
