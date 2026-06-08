@@ -5,6 +5,16 @@ import jwt from 'jsonwebtoken';
 
 const router = Router();
 
+async function logActivity(action: string, details: string) {
+  try {
+    await prisma.superadminActivityLog.create({
+      data: { action, details }
+    });
+  } catch (error) {
+    console.error('Failed to log superadmin activity:', error);
+  }
+}
+
 // Login for Superadmin
 router.post('/login', (req: Request, res: Response) => {
   const { username, password } = req.body;
@@ -402,6 +412,7 @@ router.put('/settings', async (req: Request, res: Response) => {
       update: { earningRatePer1000Views, telegramUploadEnabled, minimumPayoutThreshold },
       create: { earningRatePer1000Views, telegramUploadEnabled, minimumPayoutThreshold }
     });
+    await logActivity('UPDATE_SETTINGS', `Updated system settings: Earning Rate = $${earningRatePer1000Views}/1k, Telegram Bot = ${telegramUploadEnabled}, Min Payout = $${minimumPayoutThreshold}`);
     res.json(setting);
   } catch (error: any) {
     console.error('Error updating system settings:', error);
@@ -437,10 +448,46 @@ router.put('/admins/:id/status', async (req: Request, res: Response) => {
       data: { isActive },
       select: { id: true, email: true, isActive: true }
     });
+    await logActivity('UPDATE_ADMIN_STATUS', `Updated status of admin ${updated.email} (ID: ${id}) to ${isActive ? 'ACTIVE' : 'INACTIVE'}`);
     res.json({ message: `Admin account ${isActive ? 'activated' : 'deactivated'} successfully`, admin: updated });
   } catch (error: any) {
     console.error('Error updating admin status:', error);
     res.status(500).json({ error: 'Failed to update admin status', details: error?.message || String(error) });
+  }
+});
+
+// Update any field of a specific admin (including balance)
+router.put('/admins/:id', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { email, name, bankName, ifscCode, accountNumber, upiId, dailyUploadLimit, monthlyUploadLimit, balance, isActive } = req.body;
+  
+  try {
+    const adminId = Number(id);
+    const existing = await prisma.admin.findUnique({ where: { id: adminId } });
+    if (!existing) return res.status(404).json({ error: 'Admin not found' });
+
+    const updateData: any = {};
+    if (email !== undefined) updateData.email = email;
+    if (name !== undefined) updateData.name = name;
+    if (bankName !== undefined) updateData.bankName = bankName;
+    if (ifscCode !== undefined) updateData.ifscCode = ifscCode;
+    if (accountNumber !== undefined) updateData.accountNumber = accountNumber;
+    if (upiId !== undefined) updateData.upiId = upiId;
+    if (dailyUploadLimit !== undefined) updateData.dailyUploadLimit = Number(dailyUploadLimit);
+    if (monthlyUploadLimit !== undefined) updateData.monthlyUploadLimit = Number(monthlyUploadLimit);
+    if (balance !== undefined) updateData.balance = Number(balance);
+    if (isActive !== undefined) updateData.isActive = Boolean(isActive);
+
+    const updated = await prisma.admin.update({
+      where: { id: adminId },
+      data: updateData
+    });
+
+    await logActivity('EDIT_ADMIN', `Superadmin updated details of admin ${existing.email} (ID: ${id}). Changes: ${JSON.stringify(updateData)}`);
+    res.json(updated);
+  } catch (error: any) {
+    console.error('Error updating admin details:', error);
+    res.status(500).json({ error: 'Failed to update admin details', details: error?.message || String(error) });
   }
 });
 
@@ -454,6 +501,7 @@ router.put('/admins/limits', async (req: Request, res: Response) => {
       where: { id: { in: adminIds } },
       data: { dailyUploadLimit, monthlyUploadLimit }
     });
+    await logActivity('UPDATE_LIMITS_BULK', `Updated limits for admin IDs [${adminIds.join(', ')}]. Daily: ${dailyUploadLimit}, Monthly: ${monthlyUploadLimit}`);
     res.json({ message: 'Limits updated', count: updated.count });
   } catch (error: any) {
     console.error('Error updating admin limits:', error);
@@ -475,6 +523,23 @@ router.get('/videos', async (req: Request, res: Response) => {
   }
 });
 
+// Delete Video globally
+router.delete('/videos/:id', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  try {
+    const videoId = Number(id);
+    const video = await prisma.video.findUnique({ where: { id: videoId } });
+    if (!video) return res.status(404).json({ error: 'Video not found' });
+
+    await prisma.video.delete({ where: { id: videoId } });
+    await logActivity('DELETE_VIDEO', `Superadmin deleted video "${video.title}" (ID: ${id}) globally.`);
+    res.json({ message: 'Video deleted successfully' });
+  } catch (error: any) {
+    console.error('Error deleting video:', error);
+    res.status(500).json({ error: 'Failed to delete video', details: error?.message || String(error) });
+  }
+});
+
 // Get Payout Requests
 router.get('/payouts', async (req: Request, res: Response) => {
   try {
@@ -486,35 +551,58 @@ router.get('/payouts', async (req: Request, res: Response) => {
   }
 });
 
-// Accept or Reject Payout
+// Update or Process Payout Request
 router.put('/payouts/:id', async (req: Request, res: Response) => {
-  const { status } = req.body; // 'ACCEPTED' or 'REJECTED'
+  const { status, remarks, transactionId } = req.body;
   const { id } = req.params;
 
-  if (status !== 'ACCEPTED' && status !== 'REJECTED') {
-    return res.status(400).json({ error: 'Invalid status' });
-  }
-
   try {
-    const payout = await prisma.payoutRequest.findUnique({ where: { id: Number(id) } });
+    const payoutId = Number(id);
+    const payout = await prisma.payoutRequest.findUnique({ where: { id: payoutId } });
     if (!payout) return res.status(404).json({ error: 'Payout not found' });
-    if (payout.status !== 'PENDING') return res.status(400).json({ error: 'Payout is already processed' });
 
-    if (status === 'REJECTED') {
-      // Refund balance
-      await prisma.$transaction([
-        prisma.payoutRequest.update({ where: { id: payout.id }, data: { status } }),
-        prisma.admin.update({ where: { id: payout.adminId }, data: { balance: { increment: payout.amount } } })
-      ]);
+    const updateData: any = {};
+    if (remarks !== undefined) updateData.remarks = remarks;
+    if (transactionId !== undefined) updateData.transactionId = transactionId;
+
+    if (status !== undefined && status !== payout.status) {
+      if (payout.status !== 'PENDING') {
+        return res.status(400).json({ error: 'Payout status has already been finalized' });
+      }
+
+      updateData.status = status;
+
+      if (status === 'REJECTED' || status === 'CANCELLED') {
+        // Refund balance
+        await prisma.$transaction([
+          prisma.payoutRequest.update({ where: { id: payoutId }, data: updateData }),
+          prisma.admin.update({ where: { id: payout.adminId }, data: { balance: { increment: payout.amount } } })
+        ]);
+      } else {
+        await prisma.payoutRequest.update({ where: { id: payoutId }, data: updateData });
+      }
     } else {
-      // Just mark as accepted (balance was deducted when requested)
-      await prisma.payoutRequest.update({ where: { id: payout.id }, data: { status } });
+      await prisma.payoutRequest.update({ where: { id: payoutId }, data: updateData });
     }
 
-    res.json({ message: `Payout ${status}` });
+    await logActivity('PROCESS_PAYOUT', `Superadmin processed payout #${id}. Status: ${status || payout.status}, Remarks: ${remarks || ''}, TxID: ${transactionId || ''}`);
+    res.json({ message: `Payout updated successfully` });
   } catch (error: any) {
     console.error('Error processing payout:', error);
     res.status(500).json({ error: 'Failed to process payout', details: error?.message || String(error) });
+  }
+});
+
+// Get Activity Logs
+router.get('/activity-logs', async (req: Request, res: Response) => {
+  try {
+    const logs = await prisma.superadminActivityLog.findMany({
+      orderBy: { createdAt: 'desc' }
+    });
+    res.json(logs);
+  } catch (error: any) {
+    console.error('Error fetching activity logs:', error);
+    res.status(500).json({ error: 'Failed to fetch activity logs', details: error?.message || String(error) });
   }
 });
 

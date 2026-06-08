@@ -63,6 +63,8 @@ model PayoutRequest {
   paymentMethod  String   
   paymentDetails String   
   status         String   @default("PENDING") 
+  remarks        String?
+  transactionId  String?
   admin          Admin    @relation(fields: [adminId], references: [id])
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
@@ -84,5 +86,12 @@ model Notification {
   id        Int      @id @default(autoincrement())
   title     String
   message   String
+  createdAt DateTime @default(now())
+}
+
+model SuperadminActivityLog {
+  id        Int      @id @default(autoincrement())
+  action    String
+  details   String
   createdAt DateTime @default(now())
 }
