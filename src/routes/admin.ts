@@ -72,6 +72,72 @@ router.post('/login', async (req: Request, res: Response) => {
   }
 });
 
+// Google Login / Signup
+router.post('/google-login', async (req: Request, res: Response) => {
+  const { idToken } = req.body;
+  if (!idToken) return res.status(400).json({ error: 'ID Token is required' });
+
+  try {
+    // Verify token with Google's tokeninfo API
+    const response = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${idToken}`);
+    if (!response.ok) {
+      return res.status(400).json({ error: 'Invalid Google token' });
+    }
+
+    const payload = await response.json();
+    const { email, name, picture, email_verified, aud } = payload;
+
+    if (email_verified !== true && email_verified !== 'true') {
+      return res.status(400).json({ error: 'Google email is not verified' });
+    }
+
+    // Verify Audience (Client ID) if configured in environment
+    const expectedClientId = process.env.GOOGLE_CLIENT_ID;
+    if (expectedClientId && aud !== expectedClientId) {
+      return res.status(400).json({ error: 'Invalid token audience (Client ID mismatch)' });
+    }
+
+    let admin = await prisma.admin.findUnique({ where: { email } });
+
+    if (admin) {
+      // Login existing user
+      if (!admin.isActive) return res.status(403).json({ error: 'Account has been deactivated' });
+      
+      // Optionally update name/profilePic if they changed or were empty
+      if (!admin.name || !admin.profilePic) {
+        admin = await prisma.admin.update({
+          where: { id: admin.id },
+          data: {
+            name: admin.name || name,
+            profilePic: admin.profilePic || picture
+          }
+        });
+      }
+    } else {
+      // Auto-signup new user
+      const randomPassword = nanoid(20);
+      const hashedPassword = await bcrypt.hash(randomPassword, 10);
+      const telegramUploadId = nanoid(10);
+      
+      admin = await prisma.admin.create({
+        data: {
+          email,
+          password: hashedPassword,
+          name: name || null,
+          profilePic: picture || null,
+          telegramUploadId
+        }
+      });
+    }
+
+    const token = jwt.sign({ adminId: admin.id }, process.env.JWT_SECRET || 'supersecret', { expiresIn: '1d' });
+    res.json({ token, admin: { email: admin.email, balance: admin.balance } });
+  } catch (error: any) {
+    console.error('Error during Google authentication:', error);
+    res.status(500).json({ error: 'Google authentication failed', details: error?.message || String(error) });
+  }
+});
+
 // Protected routes below
 router.use(adminAuth);
 
