@@ -20,6 +20,10 @@ model Admin {
   password           String
   name               String?
   profilePic         String?
+  bankName           String?
+  ifscCode           String?
+  accountNumber      String?
+  upiId              String?
   telegramUploadId   String?  @unique
   telegramChatId     String?  @unique
   dailyUploadLimit   Int      @default(10)

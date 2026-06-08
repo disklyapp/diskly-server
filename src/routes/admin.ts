@@ -172,15 +172,97 @@ router.get('/dashboard', async (req: Request, res: Response) => {
 router.get('/analytics', async (req: Request, res: Response) => {
   const adminId = (req as any).adminId;
   try {
-    const analytics = await prisma.dailyAnalytic.findMany({
-      where: { adminId },
-      orderBy: { date: 'desc' },
-      take: 30
+    const admin = await prisma.admin.findUnique({
+      where: { id: adminId },
+      include: {
+        payouts: true,
+        videos: {
+          select: {
+            createdAt: true
+          }
+        }
+      }
     });
-    res.json(analytics);
+
+    if (!admin) return res.status(404).json({ error: 'Admin not found' });
+
+    // Calculate money fields
+    const availableMoney = admin.balance;
+    let paidMoney = 0;
+    let pendingMoney = 0;
+    let approvedMoney = 0;
+    let cancelledMoney = 0;
+
+    for (const p of admin.payouts) {
+      if (p.status === 'COMPLETED') {
+        paidMoney += p.amount;
+      } else if (p.status === 'PENDING') {
+        pendingMoney += p.amount;
+      } else if (p.status === 'APPROVED') {
+        approvedMoney += p.amount;
+      } else if (p.status === 'CANCELLED' || p.status === 'REJECTED') {
+        cancelledMoney += p.amount;
+      }
+    }
+
+    const totalWalletBalance = availableMoney + pendingMoney + approvedMoney + paidMoney;
+
+    // Get all daily analytics
+    const dailyAnalytics = await prisma.dailyAnalytic.findMany({
+      where: { adminId },
+      orderBy: { date: 'asc' }
+    });
+
+    // Count uploaded files for each day
+    const videosByDay: Record<string, number> = {};
+    for (const video of admin.videos) {
+      const dateStr = video.createdAt.toISOString().split('T')[0];
+      videosByDay[dateStr] = (videosByDay[dateStr] || 0) + 1;
+    }
+
+    // Map daily analytics to include uploaded files
+    const dailyData = dailyAnalytics.map(d => {
+      const dateStr = d.date.toISOString().split('T')[0];
+      return {
+        date: dateStr,
+        views: d.views,
+        likes: d.likes,
+        linkEarnings: d.earnings,
+        totalEarnings: d.earnings,
+        uploadedFiles: videosByDay[dateStr] || 0
+      };
+    });
+
+    res.json({
+      money: {
+        totalWalletBalance,
+        paid: paidMoney,
+        available: availableMoney,
+        approved: approvedMoney,
+        pending: pendingMoney,
+        cancelled: cancelledMoney
+      },
+      daily: dailyData,
+      adminCreatedAt: admin.createdAt
+    });
   } catch (error: any) {
     console.error('Error fetching admin analytics:', error);
     res.status(500).json({ error: 'Failed to fetch analytics', details: error?.message || String(error) });
+  }
+});
+
+// Get Payout requests for Admin
+router.get('/payouts', async (req: Request, res: Response) => {
+  const adminId = (req as any).adminId;
+  try {
+    const payouts = await prisma.payoutRequest.findMany({
+      where: { adminId },
+      orderBy: { createdAt: 'desc' }
+    });
+    res.json(payouts);
+  } catch (error: any) {
+    console.error('Error fetching admin payouts:', error);
+    res.status(500).json({ error: 'Failed to fetch payouts', details: error?.message || String(error) });
   }
 });
 
@@ -452,8 +534,27 @@ router.put('/videos/:id', async (req: Request, res: Response) => {
 router.get('/account', async (req: Request, res: Response) => {
   const adminId = (req as any).adminId;
   try {
-    const admin = await prisma.admin.findUnique({ where: { id: adminId }, select: { name: true, profilePic: true, email: true } });
-    res.json(admin);
+    const admin = await prisma.admin.findUnique({
+      where: { id: adminId },
+      select: {
+        name: true,
+        profilePic: true,
+        email: true,
+        bankName: true,
+        ifscCode: true,
+        accountNumber: true,
+        upiId: true,
+        balance: true
+      }
+    });
+
+    const setting = await prisma.systemSetting.findUnique({ where: { id: 1 } });
+    const minimumPayoutThreshold = setting?.minimumPayoutThreshold || 10.0;
+
+    res.json({
+      ...admin,
+      minimumPayoutThreshold
+    });
   } catch (error: any) {
     console.error('Error fetching account:', error);
     res.status(500).json({ error: 'Failed to fetch account', details: error?.message || String(error) });
@@ -463,7 +564,7 @@ router.get('/account', async (req: Request, res: Response) => {
 // Update Account info
 router.put('/account', upload.single('profilePic'), async (req: Request, res: Response) => {
   const adminId = (req as any).adminId;
-  const { name } = req.body;
+  const { name, bankName, ifscCode, accountNumber, upiId } = req.body;
   const file = req.file;
   
   let profilePicUrl = req.body.profilePicUrl;
@@ -496,11 +597,22 @@ router.put('/account', upload.single('profilePic'), async (req: Request, res: Re
     const updateData: any = {};
     if (name !== undefined) updateData.name = name;
     if (profilePicUrl !== undefined) updateData.profilePic = profilePicUrl;
+    if (bankName !== undefined) updateData.bankName = bankName;
+    if (ifscCode !== undefined) updateData.ifscCode = ifscCode;
+    if (accountNumber !== undefined) updateData.accountNumber = accountNumber;
+    if (upiId !== undefined) updateData.upiId = upiId;
 
     const admin = await prisma.admin.update({
       where: { id: adminId },
       data: updateData,
-      select: { name: true, profilePic: true }
+      select: {
+        name: true,
+        profilePic: true,
+        bankName: true,
+        ifscCode: true,
+        accountNumber: true,
+        upiId: true
+      }
     });
 
     res.json(admin);
