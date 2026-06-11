@@ -491,6 +491,36 @@ router.put('/admins/:id', async (req: Request, res: Response) => {
   }
 });
 
+// Send payment to specific admin (increments balance and totalEarnings)
+router.post('/admins/:id/pay', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { amount, remarks } = req.body;
+  
+  if (amount === undefined || isNaN(Number(amount)) || Number(amount) <= 0) {
+    return res.status(400).json({ error: 'Amount must be a positive number' });
+  }
+
+  try {
+    const adminId = Number(id);
+    const admin = await prisma.admin.findUnique({ where: { id: adminId } });
+    if (!admin) return res.status(404).json({ error: 'Admin not found' });
+
+    const updated = await prisma.admin.update({
+      where: { id: adminId },
+      data: {
+        balance: { increment: Number(amount) },
+        totalEarnings: { increment: Number(amount) }
+      }
+    });
+
+    await logActivity('SEND_PAYMENT', `Superadmin sent payment of $${amount} to admin ${admin.email}. Remarks: ${remarks || 'None'}`);
+    res.json({ message: 'Payment sent successfully', admin: updated });
+  } catch (error: any) {
+    console.error('Error sending payment:', error);
+    res.status(500).json({ error: 'Failed to send payment', details: error?.message || String(error) });
+  }
+});
+
 // Update limits for specific admin or bulk update (if body is array)
 router.put('/admins/limits', async (req: Request, res: Response) => {
   const { adminIds, dailyUploadLimit, monthlyUploadLimit } = req.body;
