@@ -8,6 +8,7 @@ import adminRoutes from './routes/admin.js';
 import videoRoutes from './routes/video.js';
 
 import { setupTelegramBot } from './bot/telegram.js';
+import { startGramjsClient } from './bot/gramjs.js';
 
 const app = express();
 
@@ -29,4 +30,6 @@ app.listen(PORT, () => {
   
   // Start Telegram Bot
   setupTelegramBot();
+  // Start GramJS Client
+  startGramjsClient();
 });

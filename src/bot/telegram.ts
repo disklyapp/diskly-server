@@ -1,20 +1,11 @@
-import { Telegraf, Markup } from 'telegraf';
+import { Markup } from 'telegraf';
 import { message } from 'telegraf/filters';
 import prisma from '../config/prisma.js';
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { nanoid } from 'nanoid';
 import fs from 'fs';
 import path from 'path';
-
-// B2 Client Setup
-const s3 = new S3Client({
-  endpoint: process.env.B2_ENDPOINT,
-  region: process.env.B2_REGION,
-  credentials: {
-    accessKeyId: process.env.B2_ACCESS_KEY_ID || '',
-    secretAccessKey: process.env.B2_SECRET_ACCESS_KEY || '',
-  },
-});
+import { initBot } from './instance.js';
+import { videoQueue } from './queue.js';
 
 const uploadDir = 'uploads';
 if (!fs.existsSync(uploadDir)) {
@@ -45,109 +36,6 @@ const isDisklyLink = (url: string): boolean => {
   return lowercaseUrl.includes('diskly.in/') || lowercaseUrl.includes('diskly.co/') || lowercaseUrl.includes('diskly.link/');
 };
 
-// Helper: Process a single Terabox link
-const processTeraboxLink = async (url: string, adminId: number): Promise<string> => {
-  const response = await fetch('https://xapiverse.com/api/terabox', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'xAPIverse-Key': process.env.TERABOX_API_KEY || ''
-    },
-    body: JSON.stringify({ url })
-  });
-
-  const data = await response.json();
-  if (data.status !== 'success' || !data.list || data.list.length === 0) {
-    throw new Error(`Failed to fetch video from Terabox link: ${url}`);
-  }
-
-  const fileInfo = data.list[0];
-  const downloadUrl = fileInfo.normal_dlink || fileInfo.stream_url || fileInfo.fast_stream_url?.['1080p'] || fileInfo.fast_stream_url?.['720p'] || fileInfo.fast_stream_url?.['480p'];
-  
-  if (!downloadUrl) {
-    throw new Error(`Could not find a valid download link from Terabox for link: ${url}`);
-  }
-
-  const downloadKey = nanoid(10);
-  const ext = fileInfo.name ? fileInfo.name.split('.').pop() : 'mp4';
-  const objectKey = `${downloadKey}.${ext}`;
-  const localFilePath = path.join(uploadDir, objectKey);
-  
-  const downloadResponse = await fetch(downloadUrl);
-  if (!downloadResponse.ok) throw new Error(`Failed to download from Terabox: ${url}`);
-  
-  const arrayBuffer = await downloadResponse.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
-  fs.writeFileSync(localFilePath, buffer);
-
-  let thumbObjectKey = '';
-  let localThumbPath = '';
-  if (fileInfo.thumbnail) {
-    try {
-      const thumbResponse = await fetch(fileInfo.thumbnail);
-      if (thumbResponse.ok) {
-        const thumbBuffer = Buffer.from(await thumbResponse.arrayBuffer());
-        thumbObjectKey = `${downloadKey}_thumb.jpg`;
-        localThumbPath = path.join(uploadDir, thumbObjectKey);
-        fs.writeFileSync(localThumbPath, thumbBuffer);
-      }
-    } catch (err) {
-      console.error("Failed to download terabox thumbnail", err);
-    }
-  }
-
-  const fileStream = fs.createReadStream(localFilePath);
-  const uploadParams = {
-    Bucket: process.env.B2_BUCKET_NAME || 'disklyserver',
-    Key: objectKey,
-    Body: fileStream,
-    ContentType: 'video/mp4',
-  };
-
-  const uploadPromises = [s3.send(new PutObjectCommand(uploadParams))];
-
-  if (localThumbPath) {
-    const thumbStream = fs.createReadStream(localThumbPath);
-    const thumbUploadParams = {
-      Bucket: process.env.B2_BUCKET_NAME || 'disklyserver',
-      Key: thumbObjectKey,
-      Body: thumbStream,
-      ContentType: 'image/jpeg',
-    };
-    uploadPromises.push(s3.send(new PutObjectCommand(thumbUploadParams)));
-  }
-
-  await Promise.all(uploadPromises);
-
-  let streamUrl = '';
-  let finalThumbnailUrl = '';
-  const domain = process.env.CLOUDFLARE_DOMAIN || '';
-  if (domain.includes('/file/')) {
-    streamUrl = `${domain.replace(/\/$/, '')}/${objectKey}`;
-    if (localThumbPath) finalThumbnailUrl = `${domain.replace(/\/$/, '')}/${thumbObjectKey}`;
-  } else {
-    streamUrl = `https://${domain.replace(/\/$/, '')}/file/${process.env.B2_BUCKET_NAME}/${objectKey}`;
-    if (localThumbPath) finalThumbnailUrl = `https://${domain.replace(/\/$/, '')}/file/${process.env.B2_BUCKET_NAME}/${thumbObjectKey}`;
-  }
-
-  await prisma.video.create({
-    data: {
-      title: fileInfo.name || "Terabox Video",
-      description: "NA",
-      streamUrl,
-      downloadKey,
-      thumbnailUrl: finalThumbnailUrl,
-      size: buffer.length,
-      adminId
-    }
-  });
-
-  if (fs.existsSync(localFilePath)) fs.unlinkSync(localFilePath);
-  if (localThumbPath && fs.existsSync(localThumbPath)) fs.unlinkSync(localThumbPath);
-
-  return `https://diskly.in/${downloadKey}`;
-};
-
 // Helper: Process a single Diskly link (clone)
 const processDisklyLink = async (url: string, adminId: number): Promise<string> => {
   const match = url.match(/diskly\.in\/([a-zA-Z0-9_-]+)/i) || url.match(/diskly\.co\/([a-zA-Z0-9_-]+)/i) || url.match(/diskly\.link\/([a-zA-Z0-9_-]+)/i);
@@ -174,112 +62,6 @@ const processDisklyLink = async (url: string, adminId: number): Promise<string> 
   return `https://diskly.in/${newDownloadKey}`;
 };
 
-// Helper: Process direct Telegram video upload
-const processVideoMessage = async (ctx: any, video: any, adminId: number): Promise<{ downloadKey: string; title: string }> => {
-  const admin = await prisma.admin.findUnique({ where: { id: adminId } });
-  if (!admin) throw new Error("Admin not found.");
-
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  const videosToday = await prisma.video.count({
-    where: { adminId: admin.id, createdAt: { gte: today } }
-  });
-
-  if (videosToday >= admin.dailyUploadLimit) {
-    throw new Error("You have reached your daily upload limit.");
-  }
-
-  if (video.file_size && video.file_size > 20 * 1024 * 1024) {
-    throw new Error("Video is larger than 20MB. Telegram Bot API limits direct video downloads to 20MB.");
-  }
-
-  const fileUrl = await ctx.telegram.getFileLink(video.file_id);
-  const downloadKey = nanoid(10);
-  const ext = video.mime_type?.split('/')[1] || 'mp4';
-  const objectKey = `${downloadKey}.${ext}`;
-  const localFilePath = path.join(uploadDir, objectKey);
-  
-  const response = await fetch(fileUrl.toString());
-  if (!response.ok) throw new Error('Failed to download video from Telegram');
-  
-  const arrayBuffer = await response.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
-  fs.writeFileSync(localFilePath, buffer);
-
-  let thumbObjectKey = '';
-  let localThumbPath = '';
-  if (video.thumbnail) {
-    try {
-      const thumbUrl = await ctx.telegram.getFileLink(video.thumbnail.file_id);
-      const thumbResponse = await fetch(thumbUrl.toString());
-      if (thumbResponse.ok) {
-        const thumbBuffer = Buffer.from(await thumbResponse.arrayBuffer());
-        thumbObjectKey = `${downloadKey}_thumb.jpg`;
-        localThumbPath = path.join(uploadDir, thumbObjectKey);
-        fs.writeFileSync(localThumbPath, thumbBuffer);
-      }
-    } catch (err) {
-      console.error("Failed to download video thumbnail", err);
-    }
-  }
-
-  const fileStream = fs.createReadStream(localFilePath);
-  const uploadParams = {
-    Bucket: process.env.B2_BUCKET_NAME || 'disklyserver',
-    Key: objectKey,
-    Body: fileStream,
-    ContentType: video.mime_type || 'video/mp4',
-  };
-  
-  const uploadPromises = [s3.send(new PutObjectCommand(uploadParams))];
-  
-  if (localThumbPath) {
-    const thumbStream = fs.createReadStream(localThumbPath);
-    const thumbUploadParams = {
-      Bucket: process.env.B2_BUCKET_NAME || 'disklyserver',
-      Key: thumbObjectKey,
-      Body: thumbStream,
-      ContentType: 'image/jpeg',
-    };
-    uploadPromises.push(s3.send(new PutObjectCommand(thumbUploadParams)));
-  }
-
-  await Promise.all(uploadPromises);
-
-  let streamUrl = '';
-  let finalThumbnailUrl = '';
-  const domain = process.env.CLOUDFLARE_DOMAIN || '';
-  
-  if (domain.includes('/file/')) {
-    streamUrl = `${domain.replace(/\/$/, '')}/${objectKey}`;
-    if (localThumbPath) finalThumbnailUrl = `${domain.replace(/\/$/, '')}/${thumbObjectKey}`;
-  } else {
-    streamUrl = `https://${domain.replace(/\/$/, '')}/file/${process.env.B2_BUCKET_NAME}/${objectKey}`;
-    if (localThumbPath) finalThumbnailUrl = `https://${domain.replace(/\/$/, '')}/file/${process.env.B2_BUCKET_NAME}/${thumbObjectKey}`;
-  }
-
-  const title = video.file_name || 'Telegram Upload';
-  const description = 'NA';
-
-  await prisma.video.create({
-    data: { 
-      title, 
-      description,
-      streamUrl, 
-      downloadKey, 
-      thumbnailUrl: finalThumbnailUrl, 
-      size: video.file_size || buffer.length,
-      adminId: admin.id 
-    }
-  });
-
-  if (fs.existsSync(localFilePath)) fs.unlinkSync(localFilePath);
-  if (localThumbPath && fs.existsSync(localThumbPath)) fs.unlinkSync(localThumbPath);
-
-  return { downloadKey, title };
-};
-
 export const setupTelegramBot = () => {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   
@@ -288,7 +70,7 @@ export const setupTelegramBot = () => {
     return null;
   }
 
-  const bot = new Telegraf(token);
+  const bot = initBot(token);
 
   // 1. /start Command
   bot.start(async (ctx) => {
@@ -656,32 +438,52 @@ export const setupTelegramBot = () => {
 
       const isVideoAttached = 'video' in messageObj;
 
-      let taskDetected = false;
-      let replacedText = rawText;
-      const newLinks: string[] = [];
+      if (uniqueTeraboxUrls.length === 0 && uniqueDisklyUrls.length === 0 && !isVideoAttached) {
+        return ctx.reply('❌ No video file or valid links (Terabox/Diskly) found in your message.');
+      }
 
-      let processingMsg = null;
+      // Early daily upload limit verification
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const videosToday = await prisma.video.count({
+        where: { adminId: admin.id, createdAt: { gte: today } }
+      });
 
-      // Dynamic task detection routing
       if (uniqueTeraboxUrls.length > 0) {
-        // Terabox link conversion
-        taskDetected = true;
-        processingMsg = await ctx.reply(`🔍 Processing ${uniqueTeraboxUrls.length} Terabox link(s)...`);
-
-        for (const url of uniqueTeraboxUrls) {
-          try {
-            const disklyLink = await processTeraboxLink(url, admin.id);
-            replacedText = replacedText.split(url).join(disklyLink);
-            newLinks.push(disklyLink);
-          } catch (err: any) {
-            console.error(`Error processing Terabox link ${url}:`, err);
-            ctx.reply(`⚠️ Failed to convert Terabox link: ${url}\nError: ${err.message || err}`);
-          }
+        if (videosToday + uniqueTeraboxUrls.length > admin.dailyUploadLimit) {
+          return ctx.reply(`❌ Daily upload limit exceeded. You can only upload ${admin.dailyUploadLimit - videosToday} more video(s) today.`);
         }
+
+        const downloadKeys = uniqueTeraboxUrls.map(() => nanoid(10));
+        const newLinks = downloadKeys.map(key => `https://diskly.in/${key}`);
+        let replacedText = rawText;
+        for (let i = 0; i < uniqueTeraboxUrls.length; i++) {
+          replacedText = replacedText.split(uniqueTeraboxUrls[i]).join(newLinks[i]);
+        }
+
+        const hasMedia = 'video' in messageObj || 'photo' in messageObj || 'document' in messageObj || 'audio' in messageObj || 'animation' in messageObj;
+        const statusMsg = await ctx.reply(`⏳ <b>Added to queue:</b> Processing ${uniqueTeraboxUrls.length} Terabox link(s)...`, { parse_mode: 'HTML' });
+
+        await videoQueue.add('terabox-upload', {
+          type: 'terabox',
+          chatId: telegramChatId,
+          messageId: messageObj.message_id,
+          processingMessageId: statusMsg.message_id,
+          urls: uniqueTeraboxUrls,
+          adminId: admin.id,
+          downloadKeys,
+          replacedText,
+          hasMedia
+        });
+
       } else if (uniqueDisklyUrls.length > 0) {
-        // Diskly to Diskly conversion
-        taskDetected = true;
-        processingMsg = await ctx.reply(`🔄 Cloning ${uniqueDisklyUrls.length} Diskly link(s)...`);
+        if (videosToday + uniqueDisklyUrls.length > admin.dailyUploadLimit) {
+          return ctx.reply(`❌ Daily upload limit exceeded. You can only upload ${admin.dailyUploadLimit - videosToday} more video(s) today.`);
+        }
+
+        const processingMsg = await ctx.reply(`🔄 Cloning ${uniqueDisklyUrls.length} Diskly link(s)...`);
+        const newLinks: string[] = [];
+        let replacedText = rawText;
 
         for (const url of uniqueDisklyUrls) {
           try {
@@ -693,64 +495,53 @@ export const setupTelegramBot = () => {
             ctx.reply(`⚠️ Failed to convert Diskly link: ${url}`);
           }
         }
-      } else if (isVideoAttached) {
-        // Direct video file upload
-        taskDetected = true;
-        processingMsg = await ctx.reply(`⏳ Processing direct video upload...`);
 
-        try {
-          const video = messageObj.video;
-          const { downloadKey, title } = await processVideoMessage(ctx, video, admin.id);
-          const disklyLink = `https://diskly.in/${downloadKey}`;
-          newLinks.push(disklyLink);
-        } catch (err: any) {
-          console.error('Error handling direct video upload:', err);
-          if (processingMsg) {
-            await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id).catch(() => {});
-          }
-          return ctx.reply(`❌ Direct upload failed: ${err.message || err}`);
+        let baseContent = '';
+        if (admin.telegramKeepText) {
+          baseContent = replacedText || newLinks.join('\n');
+        } else {
+          baseContent = newLinks.join('\n');
         }
-      }
 
-      if (!taskDetected) {
-        // No links or video found
-        return ctx.reply('❌ No video file or valid links (Terabox/Diskly) found in your message.');
-      }
+        let finalCaption = baseContent;
+        if (admin.telegramHeader) {
+          finalCaption = `${admin.telegramHeader}\n\n${finalCaption}`;
+        }
+        if (admin.telegramFooter) {
+          finalCaption = `${finalCaption}\n\n${admin.telegramFooter}`;
+        }
 
-      // Build the final caption/message text applying formatting rules
-      let baseContent = '';
-      if (admin.telegramKeepText) {
-        baseContent = replacedText || newLinks.join('\n');
-      } else {
-        baseContent = newLinks.join('\n');
-      }
-
-      let finalCaption = baseContent;
-      if (admin.telegramHeader) {
-        finalCaption = `${admin.telegramHeader}\n\n${finalCaption}`;
-      }
-      if (admin.telegramFooter) {
-        finalCaption = `${finalCaption}\n\n${admin.telegramFooter}`;
-      }
-
-      // Delete the temporary status message
-      if (processingMsg) {
         await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id).catch(() => {});
-      }
 
-      // Media Preservation check
-      const hasMedia = 'video' in messageObj || 'photo' in messageObj || 'document' in messageObj || 'audio' in messageObj || 'animation' in messageObj;
+        const hasMedia = 'video' in messageObj || 'photo' in messageObj || 'document' in messageObj || 'audio' in messageObj || 'animation' in messageObj;
+        if (hasMedia) {
+          await ctx.copyMessage(ctx.chat.id, {
+            caption: finalCaption,
+            parse_mode: 'HTML'
+          });
+        } else {
+          await ctx.reply(finalCaption, {
+            parse_mode: 'HTML'
+          });
+        }
 
-      if (hasMedia) {
-        // Return same media with the modified caption
-        await ctx.copyMessage(ctx.chat.id, {
-          caption: finalCaption,
-          parse_mode: 'HTML'
-        });
-      } else {
-        // Return text response
-        await ctx.reply(finalCaption, {
-          parse_mode: 'HTML'
+      } else if (isVideoAttached) {
+        if (videosToday >= admin.dailyUploadLimit) {
+          return ctx.reply('❌ You have reached your daily upload limit.');
+        }
+
+        const downloadKey = nanoid(10);
+        const fileName = messageObj.video.file_name || 'Telegram Upload';
+        const statusMsg = await ctx.reply(`⏳ <b>Added to queue:</b> Processing direct video upload...`, { parse_mode: 'HTML' });
+
+        await videoQueue.add('video-upload', {
+          type: 'video',
+          chatId: telegramChatId,
+          messageId: messageObj.message_id,
+          processingMessageId: statusMsg.message_id,
+          downloadKey,
+          adminId: admin.id,
+          fileName
         });
       }
 
