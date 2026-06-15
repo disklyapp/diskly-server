@@ -33,6 +33,20 @@ const s3 = new S3Client({
 
 const router = Router();
 
+// Helper to generate unique 5-10 digit random ID (using 8 digits)
+async function generateUniqueShareId(): Promise<string> {
+  let shareId = '';
+  let exists = true;
+  while (exists) {
+    shareId = Math.floor(10000000 + Math.random() * 90000000).toString();
+    const admin = await prisma.admin.findUnique({ where: { shareId } });
+    if (!admin) {
+      exists = false;
+    }
+  }
+  return shareId;
+}
+
 // Register
 router.post('/register', async (req: Request, res: Response) => {
   const { email, password } = req.body;
@@ -42,8 +56,9 @@ router.post('/register', async (req: Request, res: Response) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const telegramUploadId = nanoid(10);
+    const shareId = await generateUniqueShareId();
     const admin = await prisma.admin.create({
-      data: { email, password: hashedPassword, telegramUploadId }
+      data: { email, password: hashedPassword, telegramUploadId, shareId }
     });
 
     res.json({ message: 'Admin registered successfully' });
@@ -118,6 +133,7 @@ router.post('/google-login', async (req: Request, res: Response) => {
       const randomPassword = nanoid(20);
       const hashedPassword = await bcrypt.hash(randomPassword, 10);
       const telegramUploadId = nanoid(10);
+      const shareId = await generateUniqueShareId();
       
       admin = await prisma.admin.create({
         data: {
@@ -125,7 +141,8 @@ router.post('/google-login', async (req: Request, res: Response) => {
           password: hashedPassword,
           name: name || null,
           profilePic: picture || null,
-          telegramUploadId
+          telegramUploadId,
+          shareId
         }
       });
     }
@@ -145,8 +162,16 @@ router.use(adminAuth);
 router.get('/dashboard', async (req: Request, res: Response) => {
   const adminId = (req as any).adminId;
   try {
-    const admin = await prisma.admin.findUnique({ where: { id: adminId } });
+    let admin = await prisma.admin.findUnique({ where: { id: adminId } });
     if (!admin) return res.status(404).json({ error: 'Admin not found' });
+
+    if (!admin.shareId) {
+      const shareId = await generateUniqueShareId();
+      admin = await prisma.admin.update({
+        where: { id: adminId },
+        data: { shareId }
+      });
+    }
 
     const totalFiles = await prisma.video.count({ where: { adminId } });
     const engagements = await prisma.video.aggregate({
@@ -160,7 +185,8 @@ router.get('/dashboard', async (req: Request, res: Response) => {
       totalFiles,
       clicksAndViews: engagements._sum.views || 0,
       likes: engagements._sum.likes || 0,
-      telegramUploadId: admin.telegramUploadId
+      telegramUploadId: admin.telegramUploadId,
+      shareId: admin.shareId
     });
   } catch (error: any) {
     console.error('Error fetching admin dashboard:', error);
@@ -534,7 +560,7 @@ router.put('/videos/:id', async (req: Request, res: Response) => {
 router.get('/account', async (req: Request, res: Response) => {
   const adminId = (req as any).adminId;
   try {
-    const admin = await prisma.admin.findUnique({
+    let admin = await prisma.admin.findUnique({
       where: { id: adminId },
       select: {
         id: true,
@@ -545,9 +571,33 @@ router.get('/account', async (req: Request, res: Response) => {
         ifscCode: true,
         accountNumber: true,
         upiId: true,
-        balance: true
+        balance: true,
+        shareId: true
       }
     });
+
+    if (!admin) return res.status(404).json({ error: 'Admin not found' });
+
+    if (!admin.shareId) {
+      const generatedShareId = await generateUniqueShareId();
+      const updatedAdmin = await prisma.admin.update({
+        where: { id: adminId },
+        data: { shareId: generatedShareId },
+        select: {
+          id: true,
+          name: true,
+          profilePic: true,
+          email: true,
+          bankName: true,
+          ifscCode: true,
+          accountNumber: true,
+          upiId: true,
+          balance: true,
+          shareId: true
+        }
+      });
+      admin = updatedAdmin;
+    }
 
     const setting = await prisma.systemSetting.findUnique({ where: { id: 1 } });
     const minimumPayoutThreshold = setting?.minimumPayoutThreshold || 10.0;

@@ -2,8 +2,42 @@ import { Router, Request, Response } from 'express';
 import prisma from '../config/prisma.js';
 import { superAdminAuth } from '../middleware/auth.js';
 import jwt from 'jsonwebtoken';
+import { initializeApp, cert } from 'firebase-admin/app';
+import { getMessaging } from 'firebase-admin/messaging';
+import fs from 'fs';
+import path from 'path';
 
 const router = Router();
+
+// Initialize Firebase Admin SDK
+const serviceAccountPath = path.resolve(process.cwd(), 'firebaseapi.json');
+let firebaseInitialized = false;
+
+try {
+  let serviceAccount: any = null;
+  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+    try {
+      serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    } catch (e) {
+      console.error('Error parsing FIREBASE_SERVICE_ACCOUNT env variable:', e);
+    }
+  } else if (fs.existsSync(serviceAccountPath)) {
+    serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8'));
+  }
+
+  if (serviceAccount) {
+    initializeApp({
+      credential: cert(serviceAccount)
+    });
+    console.log('Firebase Admin initialized successfully.');
+    firebaseInitialized = true;
+  } else {
+    console.warn('Firebase service account credentials file not found and FIREBASE_SERVICE_ACCOUNT env not set.');
+  }
+} catch (error) {
+  console.error('Error initializing Firebase Admin SDK:', error);
+}
+
 
 async function logActivity(action: string, details: string) {
   try {
@@ -647,6 +681,26 @@ router.post('/notifications', async (req: Request, res: Response) => {
     const notification = await prisma.notification.create({
       data: { title, message }
     });
+
+    // Send push notification via Firebase Cloud Messaging if initialized
+    if (firebaseInitialized) {
+      try {
+        const payload = {
+          notification: {
+            title: title,
+            body: message
+          },
+          topic: 'all_users'
+        };
+        await getMessaging().send(payload);
+        console.log(`Successfully sent push notification for: "${title}" to topic "all_users"`);
+      } catch (fcmError) {
+        console.error('FCM Error sending push notification:', fcmError);
+      }
+    } else {
+      console.warn('FCM Push notification skipped: Firebase Admin SDK is not initialized.');
+    }
+
     res.json({ message: 'Notification sent successfully', notification });
   } catch (error: any) {
     console.error('Error creating notification:', error);

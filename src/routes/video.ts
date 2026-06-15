@@ -21,28 +21,40 @@ router.get('/notifications', async (req: Request, res: Response) => {
 router.get('/admin/:id', async (req: Request, res: Response) => {
   const { id } = req.params;
   try {
+    let admin = null;
     const adminIdNum = Number(id);
-    if (isNaN(adminIdNum)) {
-      return res.status(400).json({ error: 'Invalid admin ID' });
+    if (!isNaN(adminIdNum)) {
+      admin = await prisma.admin.findUnique({
+        where: { id: adminIdNum },
+        select: {
+          id: true,
+          name: true,
+          profilePic: true,
+          createdAt: true,
+          email: true
+        }
+      });
     }
 
-    const admin = await prisma.admin.findUnique({
-      where: { id: adminIdNum },
-      select: {
-        id: true,
-        name: true,
-        profilePic: true,
-        createdAt: true,
-        email: true
-      }
-    });
+    if (!admin) {
+      admin = await prisma.admin.findUnique({
+        where: { shareId: id as string },
+        select: {
+          id: true,
+          name: true,
+          profilePic: true,
+          createdAt: true,
+          email: true
+        }
+      });
+    }
 
     if (!admin) {
       return res.status(404).json({ error: 'Admin not found' });
     }
 
     const videos = await prisma.video.findMany({
-      where: { adminId: adminIdNum },
+      where: { adminId: admin.id },
       select: {
         id: true,
         title: true,
