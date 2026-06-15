@@ -458,7 +458,7 @@ router.put('/settings', async (req: Request, res: Response) => {
 router.get('/admins', async (req: Request, res: Response) => {
   try {
     const admins = await prisma.admin.findMany({
-      select: { id: true, email: true, telegramUploadId: true, dailyUploadLimit: true, monthlyUploadLimit: true, balance: true, totalEarnings: true, isActive: true, createdAt: true }
+      select: { id: true, email: true, telegramUploadId: true, dailyUploadLimit: true, monthlyUploadLimit: true, maxUploadSizeWebsite: true, maxUploadSizeTelegram: true, balance: true, totalEarnings: true, isActive: true, createdAt: true }
     });
     res.json(admins);
   } catch (error: any) {
@@ -493,7 +493,7 @@ router.put('/admins/:id/status', async (req: Request, res: Response) => {
 // Update any field of a specific admin (including balance)
 router.put('/admins/:id', async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { email, name, bankName, ifscCode, accountNumber, upiId, dailyUploadLimit, monthlyUploadLimit, balance, isActive } = req.body;
+  const { email, name, bankName, ifscCode, accountNumber, upiId, dailyUploadLimit, monthlyUploadLimit, maxUploadSizeWebsite, maxUploadSizeTelegram, balance, isActive } = req.body;
   
   try {
     const adminId = Number(id);
@@ -509,6 +509,8 @@ router.put('/admins/:id', async (req: Request, res: Response) => {
     if (upiId !== undefined) updateData.upiId = upiId;
     if (dailyUploadLimit !== undefined) updateData.dailyUploadLimit = Number(dailyUploadLimit);
     if (monthlyUploadLimit !== undefined) updateData.monthlyUploadLimit = Number(monthlyUploadLimit);
+    if (maxUploadSizeWebsite !== undefined) updateData.maxUploadSizeWebsite = Number(maxUploadSizeWebsite);
+    if (maxUploadSizeTelegram !== undefined) updateData.maxUploadSizeTelegram = Number(maxUploadSizeTelegram);
     if (balance !== undefined) updateData.balance = Number(balance);
     if (isActive !== undefined) updateData.isActive = Boolean(isActive);
 
@@ -557,15 +559,21 @@ router.post('/admins/:id/pay', async (req: Request, res: Response) => {
 
 // Update limits for specific admin or bulk update (if body is array)
 router.put('/admins/limits', async (req: Request, res: Response) => {
-  const { adminIds, dailyUploadLimit, monthlyUploadLimit } = req.body;
+  const { adminIds, dailyUploadLimit, monthlyUploadLimit, maxUploadSizeWebsite, maxUploadSizeTelegram } = req.body;
   if (!Array.isArray(adminIds)) return res.status(400).json({ error: 'adminIds must be an array' });
   
   try {
+    const data: any = {};
+    if (dailyUploadLimit !== undefined) data.dailyUploadLimit = Number(dailyUploadLimit);
+    if (monthlyUploadLimit !== undefined) data.monthlyUploadLimit = Number(monthlyUploadLimit);
+    if (maxUploadSizeWebsite !== undefined) data.maxUploadSizeWebsite = Number(maxUploadSizeWebsite);
+    if (maxUploadSizeTelegram !== undefined) data.maxUploadSizeTelegram = Number(maxUploadSizeTelegram);
+
     const updated = await prisma.admin.updateMany({
       where: { id: { in: adminIds } },
-      data: { dailyUploadLimit, monthlyUploadLimit }
+      data
     });
-    await logActivity('UPDATE_LIMITS_BULK', `Updated limits for admin IDs [${adminIds.join(', ')}]. Daily: ${dailyUploadLimit}, Monthly: ${monthlyUploadLimit}`);
+    await logActivity('UPDATE_LIMITS_BULK', `Updated limits for admin IDs [${adminIds.join(', ')}]. Changes: ${JSON.stringify(data)}`);
     res.json({ message: 'Limits updated', count: updated.count });
   } catch (error: any) {
     console.error('Error updating admin limits:', error);

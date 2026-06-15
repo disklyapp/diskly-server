@@ -436,6 +436,19 @@ router.post('/videos', upload.single('video'), async (req: Request, res: Respons
       return res.status(404).json({ error: 'Admin not found' });
     }
 
+    // Check size limit
+    const adminMaxWebsite = admin.maxUploadSizeWebsite ?? 0;
+    let limitMb = adminMaxWebsite;
+    if (limitMb <= 0) {
+      const setting = await prisma.systemSetting.findUnique({ where: { id: 1 } });
+      limitMb = setting?.defaultMaxUploadSizeWebsite || 1000;
+    }
+    const limitBytes = limitMb * 1024 * 1024;
+    if (file.size > limitBytes) {
+      fs.unlinkSync(file.path);
+      return res.status(400).json({ error: `Video size exceeds the maximum limit of ${limitMb} MB.` });
+    }
+
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
@@ -572,7 +585,9 @@ router.get('/account', async (req: Request, res: Response) => {
         accountNumber: true,
         upiId: true,
         balance: true,
-        shareId: true
+        shareId: true,
+        maxUploadSizeWebsite: true,
+        maxUploadSizeTelegram: true
       }
     });
 
@@ -593,7 +608,9 @@ router.get('/account', async (req: Request, res: Response) => {
           accountNumber: true,
           upiId: true,
           balance: true,
-          shareId: true
+          shareId: true,
+          maxUploadSizeWebsite: true,
+          maxUploadSizeTelegram: true
         }
       });
       admin = updatedAdmin;

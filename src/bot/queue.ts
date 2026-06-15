@@ -49,6 +49,22 @@ export const videoWorker = new Worker(
         if (media && media.document) {
           mimeType = media.document.mimeType || 'video/mp4';
           ext = mimeType.split('/')[1] || 'mp4';
+
+          // Validate size limit before downloading
+          const fileSize = Number(media.document.size || 0);
+          if (fileSize > 0) {
+            const admin = await prisma.admin.findUnique({ where: { id: adminId } });
+            const adminMaxTelegram = admin?.maxUploadSizeTelegram ?? 0;
+            let limitMb = adminMaxTelegram;
+            if (limitMb <= 0) {
+              const setting = await prisma.systemSetting.findUnique({ where: { id: 1 } });
+              limitMb = setting?.defaultMaxUploadSizeTelegram || 200;
+            }
+            const limitBytes = limitMb * 1024 * 1024;
+            if (fileSize > limitBytes) {
+              throw new Error(`Video size (${(fileSize / (1024 * 1024)).toFixed(1)} MB) exceeds the maximum Telegram upload limit of ${limitMb} MB.`);
+            }
+          }
         }
 
         const objectKey = `${downloadKey}.${ext}`;
@@ -200,6 +216,22 @@ export const videoWorker = new Worker(
 
           if (!downloadUrl) {
             throw new Error(`Could not find a valid download link from Terabox.`);
+          }
+
+          // Validate size limit before downloading Terabox video
+          const fileSize = fileInfo.size ? Number(fileInfo.size) : 0;
+          if (fileSize > 0) {
+            const admin = await prisma.admin.findUnique({ where: { id: adminId } });
+            const adminMaxTelegram = admin?.maxUploadSizeTelegram ?? 0;
+            let limitMb = adminMaxTelegram;
+            if (limitMb <= 0) {
+              const setting = await prisma.systemSetting.findUnique({ where: { id: 1 } });
+              limitMb = setting?.defaultMaxUploadSizeTelegram || 200;
+            }
+            const limitBytes = limitMb * 1024 * 1024;
+            if (fileSize > limitBytes) {
+              throw new Error(`Video size (${(fileSize / (1024 * 1024)).toFixed(1)} MB) exceeds the maximum Telegram upload limit of ${limitMb} MB.`);
+            }
           }
 
           await updateStatus(`⏳ <b>Downloading Terabox video [${i + 1}/${urls.length}]...</b>`);

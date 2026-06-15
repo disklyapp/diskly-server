@@ -530,6 +530,20 @@ export const setupTelegramBot = () => {
           return ctx.reply('❌ You have reached your daily upload limit.');
         }
 
+        const fileSize = messageObj.video.file_size || 0;
+        if (fileSize > 0) {
+          const adminMaxTelegram = admin.maxUploadSizeTelegram ?? 0;
+          let limitMb = adminMaxTelegram;
+          if (limitMb <= 0) {
+            const setting = await prisma.systemSetting.findUnique({ where: { id: 1 } });
+            limitMb = setting?.defaultMaxUploadSizeTelegram || 200;
+          }
+          const limitBytes = limitMb * 1024 * 1024;
+          if (fileSize > limitBytes) {
+            return ctx.reply(`❌ Video size (${(fileSize / (1024 * 1024)).toFixed(1)} MB) exceeds the maximum Telegram upload limit of ${limitMb} MB.`);
+          }
+        }
+
         const downloadKey = nanoid(10);
         const fileName = messageObj.video.file_name || 'Telegram Upload';
         const statusMsg = await ctx.reply(`⏳ <b>Added to queue:</b> Processing direct video upload...`, { parse_mode: 'HTML' });
