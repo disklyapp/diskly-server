@@ -56,7 +56,7 @@ model Video {
   views        Int      @default(0)
   likes        Int      @default(0)
   bookmarks    Int      @default(0)
-  size         Int      @default(0)
+  size         Float    @default(0)
   adminId      Int
   admin        Admin    @relation(fields: [adminId], references: [id])
   createdAt    DateTime @default(now())
