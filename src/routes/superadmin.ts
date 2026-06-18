@@ -496,6 +496,54 @@ router.get('/admins', async (req: Request, res: Response) => {
   }
 });
 
+// Get Single Admin details (Superadmin view)
+router.get('/admins/:id', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  try {
+    const admin = await prisma.admin.findUnique({
+      where: { id: Number(id) },
+      include: {
+        _count: {
+          select: { videos: true }
+        },
+        videos: {
+          select: { size: true }
+        }
+      }
+    });
+
+    if (!admin) return res.status(404).json({ error: 'Admin not found' });
+
+    const totalStorage = admin.videos.reduce((sum, v) => sum + (v.size || 0), 0);
+
+    res.json({
+      id: admin.id,
+      email: admin.email,
+      name: admin.name,
+      profilePic: admin.profilePic,
+      bankName: admin.bankName,
+      ifscCode: admin.ifscCode,
+      accountNumber: admin.accountNumber,
+      upiId: admin.upiId,
+      telegramUploadId: admin.telegramUploadId,
+      dailyUploadLimit: admin.dailyUploadLimit,
+      monthlyUploadLimit: admin.monthlyUploadLimit,
+      maxUploadSizeWebsite: admin.maxUploadSizeWebsite,
+      maxUploadSizeTelegram: admin.maxUploadSizeTelegram,
+      minimumPayoutThreshold: admin.minimumPayoutThreshold,
+      balance: admin.balance,
+      totalEarnings: admin.totalEarnings,
+      isActive: admin.isActive,
+      createdAt: admin.createdAt,
+      totalVideos: admin._count.videos,
+      totalStorage: totalStorage
+    });
+  } catch (error: any) {
+    console.error('Error fetching admin details:', error);
+    res.status(500).json({ error: 'Failed to fetch admin details', details: error?.message || String(error) });
+  }
+});
+
 // Update admin status (cancel / activate)
 router.put('/admins/:id/status', async (req: Request, res: Response) => {
   const { id } = req.params;

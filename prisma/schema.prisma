@@ -68,7 +68,7 @@ model PayoutRequest {
   amount         Float
   paymentMethod  String   
   paymentDetails String   
-  status         String   @default("PENDING") 
+  status         String   @default("IN_REVIEW") 
   remarks        String?
   transactionId  String?
   admin          Admin    @relation(fields: [adminId], references: [id])

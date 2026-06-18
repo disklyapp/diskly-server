@@ -317,7 +317,7 @@ router.post('/payouts', async (req: Request, res: Response) => {
         data: { balance: { decrement: amount } }
       }),
       prisma.payoutRequest.create({
-        data: { adminId, amount, paymentMethod, paymentDetails, status: 'PENDING' }
+        data: { adminId, amount, paymentMethod, paymentDetails, status: 'IN_REVIEW' }
       })
     ]);
 
