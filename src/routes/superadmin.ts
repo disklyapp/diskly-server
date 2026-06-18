@@ -439,14 +439,14 @@ router.get('/settings', async (req: Request, res: Response) => {
 
 // Update Settings
 router.put('/settings', async (req: Request, res: Response) => {
-  const { earningRatePer1000Views, telegramUploadEnabled, minimumPayoutThreshold } = req.body;
+  const { earningRatePer1000Views, telegramUploadEnabled, minimumPayoutThreshold, defaultMaxUploadSizeWebsite, defaultMaxUploadSizeTelegram } = req.body;
   try {
     const setting = await prisma.systemSetting.upsert({
       where: { id: 1 },
-      update: { earningRatePer1000Views, telegramUploadEnabled, minimumPayoutThreshold },
-      create: { earningRatePer1000Views, telegramUploadEnabled, minimumPayoutThreshold }
+      update: { earningRatePer1000Views, telegramUploadEnabled, minimumPayoutThreshold, defaultMaxUploadSizeWebsite: Number(defaultMaxUploadSizeWebsite), defaultMaxUploadSizeTelegram: Number(defaultMaxUploadSizeTelegram) },
+      create: { earningRatePer1000Views, telegramUploadEnabled, minimumPayoutThreshold, defaultMaxUploadSizeWebsite: Number(defaultMaxUploadSizeWebsite), defaultMaxUploadSizeTelegram: Number(defaultMaxUploadSizeTelegram) }
     });
-    await logActivity('UPDATE_SETTINGS', `Updated system settings: Earning Rate = $${earningRatePer1000Views}/1k, Telegram Bot = ${telegramUploadEnabled}, Min Payout = $${minimumPayoutThreshold}`);
+    await logActivity('UPDATE_SETTINGS', `Updated system settings: Earning Rate = $${earningRatePer1000Views}/1k, Telegram Bot = ${telegramUploadEnabled}, Min Payout = $${minimumPayoutThreshold}, Default Web Max = ${defaultMaxUploadSizeWebsite}MB, Default TG Max = ${defaultMaxUploadSizeTelegram}MB`);
     res.json(setting);
   } catch (error: any) {
     console.error('Error updating system settings:', error);
@@ -454,13 +454,42 @@ router.put('/settings', async (req: Request, res: Response) => {
   }
 });
 
-// Get All Admins
+// Get All Admins (with aggregated storage size and videos count)
 router.get('/admins', async (req: Request, res: Response) => {
   try {
     const admins = await prisma.admin.findMany({
-      select: { id: true, email: true, telegramUploadId: true, dailyUploadLimit: true, monthlyUploadLimit: true, maxUploadSizeWebsite: true, maxUploadSizeTelegram: true, balance: true, totalEarnings: true, isActive: true, createdAt: true }
+      include: {
+        _count: {
+          select: { videos: true }
+        },
+        videos: {
+          select: { size: true }
+        }
+      }
     });
-    res.json(admins);
+
+    const formattedAdmins = admins.map(admin => {
+      const totalStorage = admin.videos.reduce((sum, v) => sum + (v.size || 0), 0);
+      return {
+        id: admin.id,
+        email: admin.email,
+        name: admin.name,
+        telegramUploadId: admin.telegramUploadId,
+        dailyUploadLimit: admin.dailyUploadLimit,
+        monthlyUploadLimit: admin.monthlyUploadLimit,
+        maxUploadSizeWebsite: admin.maxUploadSizeWebsite,
+        maxUploadSizeTelegram: admin.maxUploadSizeTelegram,
+        minimumPayoutThreshold: admin.minimumPayoutThreshold,
+        balance: admin.balance,
+        totalEarnings: admin.totalEarnings,
+        isActive: admin.isActive,
+        createdAt: admin.createdAt,
+        totalVideos: admin._count.videos,
+        totalStorage: totalStorage
+      };
+    });
+
+    res.json(formattedAdmins);
   } catch (error: any) {
     console.error('Error fetching admins:', error);
     res.status(500).json({ error: 'Failed to fetch admins list', details: error?.message || String(error) });
@@ -490,10 +519,10 @@ router.put('/admins/:id/status', async (req: Request, res: Response) => {
   }
 });
 
-// Update any field of a specific admin (including balance)
+// Update any field of a specific admin (including balance and nullable limits)
 router.put('/admins/:id', async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { email, name, bankName, ifscCode, accountNumber, upiId, dailyUploadLimit, monthlyUploadLimit, maxUploadSizeWebsite, maxUploadSizeTelegram, balance, isActive } = req.body;
+  const { email, name, bankName, ifscCode, accountNumber, upiId, dailyUploadLimit, monthlyUploadLimit, maxUploadSizeWebsite, maxUploadSizeTelegram, minimumPayoutThreshold, balance, isActive } = req.body;
   
   try {
     const adminId = Number(id);
@@ -507,12 +536,15 @@ router.put('/admins/:id', async (req: Request, res: Response) => {
     if (ifscCode !== undefined) updateData.ifscCode = ifscCode;
     if (accountNumber !== undefined) updateData.accountNumber = accountNumber;
     if (upiId !== undefined) updateData.upiId = upiId;
-    if (dailyUploadLimit !== undefined) updateData.dailyUploadLimit = Number(dailyUploadLimit);
-    if (monthlyUploadLimit !== undefined) updateData.monthlyUploadLimit = Number(monthlyUploadLimit);
-    if (maxUploadSizeWebsite !== undefined) updateData.maxUploadSizeWebsite = Number(maxUploadSizeWebsite);
-    if (maxUploadSizeTelegram !== undefined) updateData.maxUploadSizeTelegram = Number(maxUploadSizeTelegram);
     if (balance !== undefined) updateData.balance = Number(balance);
     if (isActive !== undefined) updateData.isActive = Boolean(isActive);
+
+    // Support nullable values for limits
+    if (dailyUploadLimit !== undefined) updateData.dailyUploadLimit = dailyUploadLimit === null ? null : Number(dailyUploadLimit);
+    if (monthlyUploadLimit !== undefined) updateData.monthlyUploadLimit = monthlyUploadLimit === null ? null : Number(monthlyUploadLimit);
+    if (maxUploadSizeWebsite !== undefined) updateData.maxUploadSizeWebsite = maxUploadSizeWebsite === null ? null : Number(maxUploadSizeWebsite);
+    if (maxUploadSizeTelegram !== undefined) updateData.maxUploadSizeTelegram = maxUploadSizeTelegram === null ? null : Number(maxUploadSizeTelegram);
+    if (minimumPayoutThreshold !== undefined) updateData.minimumPayoutThreshold = minimumPayoutThreshold === null ? null : Number(minimumPayoutThreshold);
 
     const updated = await prisma.admin.update({
       where: { id: adminId },
@@ -557,17 +589,17 @@ router.post('/admins/:id/pay', async (req: Request, res: Response) => {
   }
 });
 
-// Update limits for specific admin or bulk update (if body is array)
+// Update limits for specific admin or bulk update (supporting null values for unlimited status)
 router.put('/admins/limits', async (req: Request, res: Response) => {
   const { adminIds, dailyUploadLimit, monthlyUploadLimit, maxUploadSizeWebsite, maxUploadSizeTelegram } = req.body;
   if (!Array.isArray(adminIds)) return res.status(400).json({ error: 'adminIds must be an array' });
   
   try {
     const data: any = {};
-    if (dailyUploadLimit !== undefined) data.dailyUploadLimit = Number(dailyUploadLimit);
-    if (monthlyUploadLimit !== undefined) data.monthlyUploadLimit = Number(monthlyUploadLimit);
-    if (maxUploadSizeWebsite !== undefined) data.maxUploadSizeWebsite = Number(maxUploadSizeWebsite);
-    if (maxUploadSizeTelegram !== undefined) data.maxUploadSizeTelegram = Number(maxUploadSizeTelegram);
+    if (dailyUploadLimit !== undefined) data.dailyUploadLimit = dailyUploadLimit === null ? null : Number(dailyUploadLimit);
+    if (monthlyUploadLimit !== undefined) data.monthlyUploadLimit = monthlyUploadLimit === null ? null : Number(monthlyUploadLimit);
+    if (maxUploadSizeWebsite !== undefined) data.maxUploadSizeWebsite = maxUploadSizeWebsite === null ? null : Number(maxUploadSizeWebsite);
+    if (maxUploadSizeTelegram !== undefined) data.maxUploadSizeTelegram = maxUploadSizeTelegram === null ? null : Number(maxUploadSizeTelegram);
 
     const updated = await prisma.admin.updateMany({
       where: { id: { in: adminIds } },
@@ -615,7 +647,23 @@ router.delete('/videos/:id', async (req: Request, res: Response) => {
 // Get Payout Requests
 router.get('/payouts', async (req: Request, res: Response) => {
   try {
-    const payouts = await prisma.payoutRequest.findMany({ include: { admin: { select: { email: true } } } });
+    const payouts = await prisma.payoutRequest.findMany({
+      include: {
+        admin: {
+          select: {
+            email: true,
+            name: true,
+            bankName: true,
+            ifscCode: true,
+            accountNumber: true,
+            upiId: true
+          }
+        }
+      },
+      orderBy: {
+        createdAt: 'desc'
+      }
+    });
     res.json(payouts);
   } catch (error: any) {
     console.error('Error fetching payout requests:', error);
@@ -638,7 +686,7 @@ router.put('/payouts/:id', async (req: Request, res: Response) => {
     if (transactionId !== undefined) updateData.transactionId = transactionId;
 
     if (status !== undefined && status !== payout.status) {
-      if (payout.status !== 'PENDING') {
+      if (payout.status !== 'PENDING' && payout.status !== 'APPROVED' && payout.status !== 'IN_REVIEW') {
         return res.status(400).json({ error: 'Payout status has already been finalized' });
       }
 

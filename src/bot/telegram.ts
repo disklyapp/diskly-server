@@ -388,7 +388,7 @@ export const setupTelegramBot = () => {
         `💰 <b>Balance:</b> $${admin.balance.toFixed(2)}\n` +
         `💵 <b>Total Earnings:</b> $${admin.totalEarnings.toFixed(2)}\n` +
         `📹 <b>Total Videos:</b> ${totalVideos}\n` +
-        `📈 <b>Today's Uploads:</b> ${todayVideos} / ${admin.dailyUploadLimit}\n\n` +
+        `📈 <b>Today's Uploads:</b> ${todayVideos} / ${admin.dailyUploadLimit !== null ? admin.dailyUploadLimit : 'Unlimited'}\n\n` +
         `⚙️ <b>Bot Settings</b>\n` +
         `📝 <b>Keep Caption Text:</b> ${admin.telegramKeepText ? 'Enabled ✅' : 'Disabled ❌'}\n` +
         `🔝 <b>Header:</b> ${admin.telegramHeader ? `<code>${admin.telegramHeader}</code>` : '<i>None</i>'}\n` +
@@ -450,7 +450,7 @@ export const setupTelegramBot = () => {
       });
 
       if (uniqueTeraboxUrls.length > 0) {
-        if (videosToday + uniqueTeraboxUrls.length > admin.dailyUploadLimit) {
+        if (admin.dailyUploadLimit !== null && videosToday + uniqueTeraboxUrls.length > admin.dailyUploadLimit) {
           return ctx.reply(`❌ Daily upload limit exceeded. You can only upload ${admin.dailyUploadLimit - videosToday} more video(s) today.`);
         }
 
@@ -477,7 +477,7 @@ export const setupTelegramBot = () => {
         });
 
       } else if (uniqueDisklyUrls.length > 0) {
-        if (videosToday + uniqueDisklyUrls.length > admin.dailyUploadLimit) {
+        if (admin.dailyUploadLimit !== null && videosToday + uniqueDisklyUrls.length > admin.dailyUploadLimit) {
           return ctx.reply(`❌ Daily upload limit exceeded. You can only upload ${admin.dailyUploadLimit - videosToday} more video(s) today.`);
         }
 
@@ -526,7 +526,7 @@ export const setupTelegramBot = () => {
         }
 
       } else if (isVideoAttached) {
-        if (videosToday >= admin.dailyUploadLimit) {
+        if (admin.dailyUploadLimit !== null && videosToday >= admin.dailyUploadLimit) {
           return ctx.reply('❌ You have reached your daily upload limit.');
         }
 

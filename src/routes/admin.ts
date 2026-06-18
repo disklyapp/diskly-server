@@ -412,7 +412,246 @@ router.put('/telegram/api-key', async (req: Request, res: Response) => {
   }
 });
 
-// Upload Video to Backblaze B2
+const chunksDir = path.join(uploadDir, 'chunks');
+if (!fs.existsSync(chunksDir)) {
+  fs.mkdirSync(chunksDir, { recursive: true });
+}
+
+// Initialize Chunked Upload
+router.post('/videos/chunk/init', async (req: Request, res: Response) => {
+  const adminId = (req as any).adminId;
+  const { title, filename, fileSize } = req.body;
+
+  try {
+    const admin = await prisma.admin.findUnique({ where: { id: adminId } });
+    if (!admin) return res.status(404).json({ error: 'Admin not found' });
+
+    // Check size limit
+    let limitMb = admin.maxUploadSizeWebsite;
+    if (limitMb === null || limitMb === undefined) {
+      const setting = await prisma.systemSetting.findUnique({ where: { id: 1 } });
+      limitMb = setting?.defaultMaxUploadSizeWebsite || 500;
+    }
+    const limitBytes = limitMb * 1024 * 1024;
+    if (fileSize && Number(fileSize) > limitBytes) {
+      return res.status(400).json({ error: `Video size exceeds the maximum limit of ${limitMb} MB.` });
+    }
+
+    // Check daily / monthly limits
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    if (admin.dailyUploadLimit !== null && admin.dailyUploadLimit !== undefined) {
+      const videosToday = await prisma.video.count({
+        where: { adminId, createdAt: { gte: today } }
+      });
+      if (videosToday >= admin.dailyUploadLimit) {
+        return res.status(400).json({ error: 'Daily upload limit reached' });
+      }
+    }
+
+    if (admin.monthlyUploadLimit !== null && admin.monthlyUploadLimit !== undefined) {
+      const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+      const videosThisMonth = await prisma.video.count({
+        where: { adminId, createdAt: { gte: firstDayOfMonth } }
+      });
+      if (videosThisMonth >= admin.monthlyUploadLimit) {
+        return res.status(400).json({ error: 'Monthly upload limit reached' });
+      }
+    }
+
+    const uploadId = nanoid(12);
+    const adminChunksDir = path.join(chunksDir, uploadId);
+    if (!fs.existsSync(adminChunksDir)) {
+      fs.mkdirSync(adminChunksDir, { recursive: true });
+    }
+
+    res.json({ uploadId });
+  } catch (error: any) {
+    console.error('Error initializing chunked upload:', error);
+    res.status(500).json({ error: 'Failed to initialize upload', details: error?.message || String(error) });
+  }
+});
+
+// Upload Chunk
+router.post('/videos/chunk/upload', upload.single('video'), async (req: Request, res: Response) => {
+  const { uploadId, chunkIndex } = req.body;
+  const file = req.file;
+
+  if (!uploadId || chunkIndex === undefined || !file) {
+    if (file && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+    return res.status(400).json({ error: 'Missing uploadId, chunkIndex, or file' });
+  }
+
+  try {
+    const adminChunksDir = path.join(chunksDir, uploadId);
+    if (!fs.existsSync(adminChunksDir)) {
+      if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+      return res.status(400).json({ error: 'Invalid or expired upload session' });
+    }
+
+    const chunkPath = path.join(adminChunksDir, String(chunkIndex));
+    fs.renameSync(file.path, chunkPath);
+
+    res.json({ success: true });
+  } catch (error: any) {
+    if (file && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+    console.error('Error uploading chunk:', error);
+    res.status(500).json({ error: 'Failed to upload chunk', details: error?.message || String(error) });
+  }
+});
+
+// Complete Chunked Upload
+router.post('/videos/chunk/complete', async (req: Request, res: Response) => {
+  const adminId = (req as any).adminId;
+  const { uploadId, title, filename, totalChunks, description } = req.body;
+
+  if (!uploadId || !totalChunks) {
+    return res.status(400).json({ error: 'Missing uploadId or totalChunks' });
+  }
+
+  const adminChunksDir = path.join(chunksDir, uploadId);
+  const mergedFilePath = path.join(uploadDir, `${uploadId}_merged.mp4`);
+  let thumbPath = '';
+
+  try {
+    const admin = await prisma.admin.findUnique({ where: { id: adminId } });
+    if (!admin) {
+      return res.status(404).json({ error: 'Admin not found' });
+    }
+
+    if (!fs.existsSync(adminChunksDir)) {
+      return res.status(400).json({ error: 'Upload session not found' });
+    }
+
+    // Check that all chunks are present
+    const chunksCount = Number(totalChunks);
+    for (let i = 0; i < chunksCount; i++) {
+      const chunkPath = path.join(adminChunksDir, String(i));
+      if (!fs.existsSync(chunkPath)) {
+        return res.status(400).json({ error: `Missing chunk ${i}` });
+      }
+    }
+
+    // Merge chunks
+    const writeStream = fs.createWriteStream(mergedFilePath);
+    for (let i = 0; i < chunksCount; i++) {
+      const chunkPath = path.join(adminChunksDir, String(i));
+      const chunkBuffer = fs.readFileSync(chunkPath);
+      writeStream.write(chunkBuffer);
+      fs.unlinkSync(chunkPath); // Delete chunk after writing
+    }
+    writeStream.end();
+
+    // Wait for the file to be fully written
+    await new Promise<void>((resolve, reject) => {
+      writeStream.on('finish', () => resolve());
+      writeStream.on('error', (err) => reject(err));
+    });
+
+    // Clean up chunk directory
+    fs.rmdirSync(adminChunksDir);
+
+    const mergedStats = fs.statSync(mergedFilePath);
+
+    const downloadKey = nanoid(10);
+    const fileExtension = filename ? filename.split('.').pop() : 'mp4';
+    const objectKey = `${downloadKey}.${fileExtension}`;
+    const thumbObjectKey = `${downloadKey}_thumb.png`;
+    thumbPath = path.join(uploadDir, thumbObjectKey);
+
+    // Extract Thumbnail using fluent-ffmpeg
+    try {
+      await new Promise<void>((resolve, reject) => {
+        ffmpeg(mergedFilePath)
+          .screenshots({
+            timestamps: ['00:00:01.000'],
+            filename: thumbObjectKey,
+            folder: uploadDir,
+            size: '320x240'
+          })
+          .on('end', () => resolve())
+          .on('error', (err) => reject(err));
+      });
+    } catch (ffmpegErr) {
+      console.error('Failed to generate thumbnail via ffmpeg:', ffmpegErr);
+    }
+
+    // Upload to Backblaze B2 (Video)
+    const fileStream = fs.createReadStream(mergedFilePath);
+    const uploadParams = {
+      Bucket: process.env.B2_BUCKET_NAME || 'disklyserver',
+      Key: objectKey,
+      Body: fileStream,
+      ContentType: 'video/mp4',
+    };
+
+    // Upload to Backblaze B2 (Thumbnail)
+    let thumbUploadParams: any = null;
+    if (fs.existsSync(thumbPath)) {
+      const thumbStream = fs.createReadStream(thumbPath);
+      thumbUploadParams = {
+        Bucket: process.env.B2_BUCKET_NAME || 'disklyserver',
+        Key: thumbObjectKey,
+        Body: thumbStream,
+        ContentType: 'image/png',
+      };
+    }
+
+    try {
+      const uploadPromises = [s3.send(new PutObjectCommand(uploadParams))];
+      if (thumbUploadParams) {
+        uploadPromises.push(s3.send(new PutObjectCommand(thumbUploadParams)));
+      }
+      await Promise.all(uploadPromises);
+    } catch (s3Error: any) {
+      console.error('Detailed B2 Upload Error:', s3Error);
+      if (fs.existsSync(mergedFilePath)) fs.unlinkSync(mergedFilePath);
+      if (fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath);
+      return res.status(500).json({ error: 'Failed to upload video to storage', details: s3Error?.message || String(s3Error) });
+    }
+
+    let streamUrl = '';
+    let finalThumbnailUrl = '';
+    const domain = process.env.CLOUDFLARE_DOMAIN || '';
+    if (domain.includes('/file/')) {
+      streamUrl = `${domain.replace(/\/$/, '')}/${objectKey}`;
+      if (fs.existsSync(thumbPath)) finalThumbnailUrl = `${domain.replace(/\/$/, '')}/${thumbObjectKey}`;
+    } else {
+      streamUrl = `https://${domain.replace(/\/$/, '')}/file/${process.env.B2_BUCKET_NAME}/${objectKey}`;
+      if (fs.existsSync(thumbPath)) finalThumbnailUrl = `https://${domain.replace(/\/$/, '')}/file/${process.env.B2_BUCKET_NAME}/${thumbObjectKey}`;
+    }
+
+    const video = await prisma.video.create({
+      data: {
+        title: title || filename || 'Untitled',
+        description: description || '',
+        streamUrl,
+        downloadKey,
+        thumbnailUrl: finalThumbnailUrl,
+        size: mergedStats.size,
+        adminId
+      }
+    });
+
+    if (fs.existsSync(mergedFilePath)) fs.unlinkSync(mergedFilePath);
+    if (fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath);
+
+    res.json(video);
+  } catch (error: any) {
+    if (fs.existsSync(mergedFilePath)) fs.unlinkSync(mergedFilePath);
+    if (fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath);
+    if (fs.existsSync(adminChunksDir)) {
+      try {
+        fs.rmSync(adminChunksDir, { recursive: true, force: true });
+      } catch (e) {}
+    }
+    console.error('Error completing chunked upload:', error);
+    res.status(500).json({ error: 'Failed to complete upload', details: error?.message || String(error) });
+  }
+});
+
+// Upload Video to Backblaze B2 (standard single request upload)
 router.post('/videos', upload.single('video'), async (req: Request, res: Response) => {
   const adminId = (req as any).adminId;
   const { thumbnailUrl, description } = req.body;
@@ -437,11 +676,10 @@ router.post('/videos', upload.single('video'), async (req: Request, res: Respons
     }
 
     // Check size limit
-    const adminMaxWebsite = admin.maxUploadSizeWebsite ?? 0;
-    let limitMb = adminMaxWebsite;
-    if (limitMb <= 0) {
+    let limitMb = admin.maxUploadSizeWebsite;
+    if (limitMb === null || limitMb === undefined) {
       const setting = await prisma.systemSetting.findUnique({ where: { id: 1 } });
-      limitMb = setting?.defaultMaxUploadSizeWebsite || 1000;
+      limitMb = setting?.defaultMaxUploadSizeWebsite || 500;
     }
     const limitBytes = limitMb * 1024 * 1024;
     if (file.size > limitBytes) {
@@ -452,13 +690,27 @@ router.post('/videos', upload.single('video'), async (req: Request, res: Respons
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const videosToday = await prisma.video.count({
-      where: { adminId, createdAt: { gte: today } }
-    });
+    // Check daily upload limit
+    if (admin.dailyUploadLimit !== null && admin.dailyUploadLimit !== undefined) {
+      const videosToday = await prisma.video.count({
+        where: { adminId, createdAt: { gte: today } }
+      });
+      if (videosToday >= admin.dailyUploadLimit) {
+        fs.unlinkSync(file.path);
+        return res.status(400).json({ error: 'Daily upload limit reached' });
+      }
+    }
 
-    if (videosToday >= admin.dailyUploadLimit) {
-      fs.unlinkSync(file.path);
-      return res.status(400).json({ error: 'Daily upload limit reached' });
+    // Check monthly upload limit
+    if (admin.monthlyUploadLimit !== null && admin.monthlyUploadLimit !== undefined) {
+      const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+      const videosThisMonth = await prisma.video.count({
+        where: { adminId, createdAt: { gte: firstDayOfMonth } }
+      });
+      if (videosThisMonth >= admin.monthlyUploadLimit) {
+        fs.unlinkSync(file.path);
+        return res.status(400).json({ error: 'Monthly upload limit reached' });
+      }
     }
 
     const downloadKey = nanoid(10);

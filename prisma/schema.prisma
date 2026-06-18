@@ -12,8 +12,8 @@ model SystemSetting {
   earningRatePer1000Views        Float   @default(1.0)
   telegramUploadEnabled         Boolean @default(true)
   minimumPayoutThreshold        Float   @default(10.0)
-  defaultMaxUploadSizeWebsite   Int     @default(1000)
-  defaultMaxUploadSizeTelegram  Int     @default(200)
+  defaultMaxUploadSizeWebsite   Int     @default(500)
+  defaultMaxUploadSizeTelegram  Int     @default(500)
 }
 
 model Admin {
@@ -29,10 +29,11 @@ model Admin {
   telegramUploadId   String?  @unique
   telegramChatId     String?  @unique
   shareId            String?  @unique
-  dailyUploadLimit   Int      @default(10)
-  monthlyUploadLimit Int      @default(300)
-  maxUploadSizeWebsite  Int   @default(1000)
-  maxUploadSizeTelegram Int   @default(200)
+  dailyUploadLimit   Int?
+  monthlyUploadLimit Int?
+  maxUploadSizeWebsite  Int?
+  maxUploadSizeTelegram Int?
+  minimumPayoutThreshold Float?
   balance            Float    @default(0.0)
   totalEarnings      Float    @default(0.0)
   isActive           Boolean  @default(true)
