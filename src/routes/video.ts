@@ -65,7 +65,8 @@ router.get('/admin/:id', async (req: Request, res: Response) => {
         likes: true,
         bookmarks: true,
         createdAt: true,
-        downloadKey: true
+        downloadKey: true,
+        size: true
       },
       orderBy: { createdAt: 'desc' }
     });
@@ -84,7 +85,7 @@ router.get('/:key', async (req: Request, res: Response) => {
     const video = await prisma.video.findFirst({
       where: { downloadKey: key as string },
       select: { 
-        title: true, streamUrl: true, thumbnailUrl: true, views: true, likes: true, bookmarks: true, createdAt: true, downloadKey: true,
+        title: true, streamUrl: true, thumbnailUrl: true, views: true, likes: true, bookmarks: true, createdAt: true, downloadKey: true, size: true,
         admin: { select: { id: true, name: true, email: true, profilePic: true, createdAt: true } }
       }
     });
@@ -105,7 +106,7 @@ router.post('/batch', async (req: Request, res: Response) => {
     const videos = await prisma.video.findMany({
       where: { downloadKey: { in: keys } },
       select: { 
-        title: true, streamUrl: true, thumbnailUrl: true, views: true, likes: true, bookmarks: true, createdAt: true, downloadKey: true,
+        title: true, streamUrl: true, thumbnailUrl: true, views: true, likes: true, bookmarks: true, createdAt: true, downloadKey: true, size: true,
         admin: { select: { id: true, name: true, email: true, profilePic: true, createdAt: true } }
       }
     });
