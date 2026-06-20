@@ -873,7 +873,9 @@ router.get('/account', async (req: Request, res: Response) => {
 
     res.json({
       ...admin,
-      minimumPayoutThreshold
+      minimumPayoutThreshold,
+      defaultMaxUploadSizeWebsite: setting?.defaultMaxUploadSizeWebsite || 500,
+      defaultMaxUploadSizeTelegram: setting?.defaultMaxUploadSizeTelegram || 500
     });
   } catch (error: any) {
     console.error('Error fetching account:', error);
