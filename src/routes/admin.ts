@@ -6,6 +6,7 @@ import prisma from '../config/prisma.js';
 import { adminAuth } from '../middleware/auth.js';
 import multer from 'multer';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { Upload } from '@aws-sdk/lib-storage';
 import fs from 'fs';
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegStatic from 'ffmpeg-static';
@@ -579,12 +580,18 @@ router.post('/videos/chunk/complete', async (req: Request, res: Response) => {
 
     // Upload to Backblaze B2 (Video)
     const fileStream = fs.createReadStream(mergedFilePath);
-    const uploadParams = {
-      Bucket: process.env.B2_BUCKET_NAME || 'disklyserver',
-      Key: objectKey,
-      Body: fileStream,
-      ContentType: 'video/mp4',
-    };
+    const videoUpload = new Upload({
+      client: s3,
+      params: {
+        Bucket: process.env.B2_BUCKET_NAME || 'disklyserver',
+        Key: objectKey,
+        Body: fileStream,
+        ContentType: 'video/mp4',
+      },
+      queueSize: 4,
+      partSize: 5 * 1024 * 1024,
+      leavePartsOnError: false,
+    });
 
     // Upload to Backblaze B2 (Thumbnail)
     let thumbUploadParams: any = null;
@@ -599,7 +606,7 @@ router.post('/videos/chunk/complete', async (req: Request, res: Response) => {
     }
 
     try {
-      const uploadPromises = [s3.send(new PutObjectCommand(uploadParams))];
+      const uploadPromises = [videoUpload.done()];
       if (thumbUploadParams) {
         uploadPromises.push(s3.send(new PutObjectCommand(thumbUploadParams)));
       }
@@ -740,12 +747,18 @@ router.post('/videos', upload.single('video'), async (req: Request, res: Respons
 
     // Upload to Backblaze B2 (Video)
     const fileStream = fs.createReadStream(file.path);
-    const uploadParams = {
-      Bucket: process.env.B2_BUCKET_NAME || 'disklyserver',
-      Key: objectKey,
-      Body: fileStream,
-      ContentType: file.mimetype,
-    };
+    const videoUpload = new Upload({
+      client: s3,
+      params: {
+        Bucket: process.env.B2_BUCKET_NAME || 'disklyserver',
+        Key: objectKey,
+        Body: fileStream,
+        ContentType: file.mimetype,
+      },
+      queueSize: 4,
+      partSize: 5 * 1024 * 1024,
+      leavePartsOnError: false,
+    });
 
     // Upload to Backblaze B2 (Thumbnail)
     let thumbUploadParams: any = null;
@@ -760,7 +773,7 @@ router.post('/videos', upload.single('video'), async (req: Request, res: Respons
     }
 
     try {
-      const uploadPromises = [s3.send(new PutObjectCommand(uploadParams))];
+      const uploadPromises = [videoUpload.done()];
       if (thumbUploadParams) {
         uploadPromises.push(s3.send(new PutObjectCommand(thumbUploadParams)));
       }

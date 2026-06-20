@@ -399,9 +399,6 @@ export const setupTelegramBot = () => {
         return ctx.reply('❌ Your account is currently deactivated.');
       }
 
-      // Extract raw text or caption from incoming message
-      const rawText = ('text' in messageObj ? messageObj.text : 'caption' in messageObj ? messageObj.caption : '') || '';
-      
       // Ignore if it's a command
       if (rawText.trim().startsWith('/')) {
         return;

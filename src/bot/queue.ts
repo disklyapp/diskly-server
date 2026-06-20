@@ -3,10 +3,18 @@ import { workerConnection, queueConnection } from '../config/redis.js';
 import prisma from '../config/prisma.js';
 import { s3 } from '../config/b2.js';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
+import { Upload } from '@aws-sdk/lib-storage';
 import { gramjsClient } from './gramjs.js';
 import { bot } from './instance.js';
 import fs from 'fs';
 import path from 'path';
+
+const formatSize = (bytes: number): string => {
+  if (bytes >= 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(0)} MB`;
+};
 
 const uploadDir = 'uploads';
 if (!fs.existsSync(uploadDir)) {
@@ -62,7 +70,7 @@ export const videoWorker = new Worker(
             }
             const limitBytes = limitMb * 1024 * 1024;
             if (fileSize > limitBytes) {
-              throw new Error(`Video size (${(fileSize / (1024 * 1024)).toFixed(1)} MB) exceeds the maximum Telegram upload limit of ${limitMb} MB.`);
+              throw new Error(`This file is ${formatSize(fileSize)}. The current supported upload limit is ${formatSize(limitBytes)}.`);
             }
           }
         }
@@ -105,14 +113,20 @@ export const videoWorker = new Worker(
         await updateStatus('📤 <b>Uploading to Backblaze B2...</b>');
 
         const fileStream = fs.createReadStream(localFilePath);
-        const uploadParams = {
-          Bucket: process.env.B2_BUCKET_NAME || 'disklyserver',
-          Key: objectKey,
-          Body: fileStream,
-          ContentType: mimeType,
-        };
+        const videoUpload = new Upload({
+          client: s3,
+          params: {
+            Bucket: process.env.B2_BUCKET_NAME || 'disklyserver',
+            Key: objectKey,
+            Body: fileStream,
+            ContentType: mimeType,
+          },
+          queueSize: 4,
+          partSize: 5 * 1024 * 1024,
+          leavePartsOnError: false,
+        });
 
-        const uploadPromises = [s3.send(new PutObjectCommand(uploadParams))];
+        const uploadPromises = [videoUpload.done()];
 
         if (localThumbPath) {
           const thumbStream = fs.createReadStream(localThumbPath);
@@ -230,7 +244,7 @@ export const videoWorker = new Worker(
             }
             const limitBytes = limitMb * 1024 * 1024;
             if (fileSize > limitBytes) {
-              throw new Error(`Video size (${(fileSize / (1024 * 1024)).toFixed(1)} MB) exceeds the maximum Telegram upload limit of ${limitMb} MB.`);
+              throw new Error(`This file is ${formatSize(fileSize)}. The current supported upload limit is ${formatSize(limitBytes)}.`);
             }
           }
 
@@ -266,14 +280,20 @@ export const videoWorker = new Worker(
           await updateStatus(`📤 <b>Uploading Terabox video to B2 [${i + 1}/${urls.length}]...</b>`);
 
           const fileStream = fs.createReadStream(localFilePath);
-          const uploadParams = {
-            Bucket: process.env.B2_BUCKET_NAME || 'disklyserver',
-            Key: objectKey,
-            Body: fileStream,
-            ContentType: 'video/mp4',
-          };
+          const videoUpload = new Upload({
+            client: s3,
+            params: {
+              Bucket: process.env.B2_BUCKET_NAME || 'disklyserver',
+              Key: objectKey,
+              Body: fileStream,
+              ContentType: 'video/mp4',
+            },
+            queueSize: 4,
+            partSize: 5 * 1024 * 1024,
+            leavePartsOnError: false,
+          });
 
-          const uploadPromises = [s3.send(new PutObjectCommand(uploadParams))];
+          const uploadPromises = [videoUpload.done()];
 
           if (localThumbPath) {
             const thumbStream = fs.createReadStream(localThumbPath);
