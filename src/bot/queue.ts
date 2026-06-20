@@ -117,7 +117,7 @@ export const videoWorker = new Worker(
           console.error('Failed to download video thumbnail via GramJS:', err);
         }
 
-        await updateStatus('📤 <b>Uploading to Backblaze B2...</b>');
+        await updateStatus('📤 <b>Uploading to Diskly Server...</b>');
 
         const fileStream = fs.createReadStream(localFilePath);
         const videoUpload = new Upload({
@@ -196,10 +196,16 @@ export const videoWorker = new Worker(
         }
 
         await bot.telegram.deleteMessage(chatId, processingMessageId).catch(() => {});
-        await bot.telegram.copyMessage(chatId, chatId, messageId, {
-          caption: finalCaption,
-          parse_mode: 'HTML',
-        });
+        if (finalThumbnailUrl) {
+          await bot.telegram.sendPhoto(chatId, finalThumbnailUrl, {
+            caption: finalCaption,
+            parse_mode: 'HTML',
+          });
+        } else {
+          await bot.telegram.sendMessage(chatId, finalCaption, {
+            parse_mode: 'HTML',
+          });
+        }
 
       } catch (err: any) {
         console.error('Error handling direct video upload in background job:', err);
@@ -284,7 +290,7 @@ export const videoWorker = new Worker(
             }
           }
 
-          await updateStatus(`📤 <b>Uploading Terabox video to B2 [${i + 1}/${urls.length}]...</b>`);
+          await updateStatus(`📤 <b>Uploading Terabox video to Diskly Server [${i + 1}/${urls.length}]...</b>`);
 
           const fileStream = fs.createReadStream(localFilePath);
           const videoUpload = new Upload({
