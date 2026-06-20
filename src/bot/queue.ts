@@ -385,3 +385,11 @@ export const videoWorker = new Worker(
 videoWorker.on('failed', (job, err) => {
   console.error(`Job ${job?.id} failed with error:`, err);
 });
+
+videoWorker.on('error', (err) => {
+  console.error('Queue Worker Error (e.g. Redis limit reached):', err);
+});
+
+videoQueue.on('error', (err) => {
+  console.error('Queue Error (e.g. Redis limit reached):', err);
+});
