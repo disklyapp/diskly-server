@@ -30,10 +30,17 @@ export const videoWorker = new Worker(
   async (job: Job) => {
     const { type, chatId, messageId, processingMessageId, adminId } = job.data;
 
+    let lastStatusText = '';
     const updateStatus = async (text: string) => {
+      if (text === lastStatusText) return;
       try {
         await bot.telegram.editMessageText(chatId, processingMessageId, undefined, text, { parse_mode: 'HTML' });
-      } catch (err) {
+        lastStatusText = text;
+      } catch (err: any) {
+        if (err.description && err.description.includes('message is not modified')) {
+          lastStatusText = text; // Sync cache
+          return;
+        }
         console.error('Failed to update status message in telegram:', err);
       }
     };
