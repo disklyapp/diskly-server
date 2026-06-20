@@ -534,13 +534,33 @@ router.post('/videos/chunk/complete', async (req: Request, res: Response) => {
       }
     }
 
-    // Merge chunks
+    // Merge chunks sequentially using streams to avoid heap out of memory
     const writeStream = fs.createWriteStream(mergedFilePath);
     for (let i = 0; i < chunksCount; i++) {
       const chunkPath = path.join(adminChunksDir, String(i));
-      const chunkBuffer = fs.readFileSync(chunkPath);
-      writeStream.write(chunkBuffer);
-      fs.unlinkSync(chunkPath); // Delete chunk after writing
+      await new Promise<void>((resolve, reject) => {
+        const readStream = fs.createReadStream(chunkPath);
+        
+        const handleError = (err: Error) => {
+          readStream.destroy();
+          reject(err);
+        };
+        
+        readStream.on('error', handleError);
+        writeStream.once('error', handleError);
+        
+        readStream.pipe(writeStream, { end: false });
+        
+        readStream.on('end', () => {
+          writeStream.off('error', handleError);
+          try {
+            fs.unlinkSync(chunkPath); // Delete chunk after writing
+            resolve();
+          } catch (unlinkErr) {
+            reject(unlinkErr);
+          }
+        });
+      });
     }
     writeStream.end();
 
