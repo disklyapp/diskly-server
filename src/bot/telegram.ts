@@ -19,6 +19,13 @@ const getLinkedAdmin = async (telegramChatId: string) => {
   });
 };
 
+const formatSize = (bytes: number): string => {
+  if (bytes >= 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(0)} MB`;
+};
+
 // Helper: Check if a URL is a Terabox link
 const isTeraboxLink = (url: string): boolean => {
   const lowercaseUrl = url.toLowerCase();
@@ -72,6 +79,8 @@ export const setupTelegramBot = () => {
 
   const bot = initBot(token);
 
+  const linkingState = new Map<string, boolean>();
+
   // 1. /start Command
   bot.start(async (ctx) => {
     try {
@@ -101,7 +110,7 @@ export const setupTelegramBot = () => {
           `<b>Steps to Link:</b>\n` +
           `1. Go to your Diskly Dashboard.\n` +
           `2. Copy your <b>Telegram Upload ID</b>.\n` +
-          `3. Use the command: <code>/link_account &lt;your_upload_id&gt;</code>\n\n` +
+          `3. Use the command: <code>/link_account</code> (or <code>/link_account &lt;your_upload_id&gt;</code>)\n\n` +
           `<b>Available Commands:</b>\n` +
           `/start - View bot status and commands\n` +
           `/link_account - Link your Diskly Upload ID\n` +
@@ -124,18 +133,15 @@ export const setupTelegramBot = () => {
   bot.command('link_account', async (ctx) => {
     const text = ctx.message.text.trim();
     const arg = text.replace(/^\/link_account\s*/, '').trim();
+    const telegramChatId = ctx.chat.id.toString();
+
     if (!arg) {
-      return ctx.reply(
-        `📖 <b>Tutorial: Link Account</b>\n\n` +
-        `Link your Diskly account to this bot to bind it permanently.\n\n` +
-        `<b>Usage:</b>\n` +
-        `<code>/link_account &lt;upload_id&gt;</code>\n\n` +
-        `<b>Example:</b>\n` +
-        `<code>/link_account 6f9a8b7c</code>`,
-        { parse_mode: 'HTML' }
-      );
+      // Method 1: Interactive Flow
+      linkingState.set(telegramChatId, true);
+      return ctx.reply('Please send your Upload ID to link your account.');
     }
     
+    // Method 2: Direct Command
     try {
       const admin = await prisma.admin.findUnique({
         where: { telegramUploadId: arg }
@@ -145,12 +151,12 @@ export const setupTelegramBot = () => {
         return ctx.reply(`❌ <b>Invalid Upload ID.</b> Please check your admin dashboard and try again.`, { parse_mode: 'HTML' });
       }
       
-      const telegramChatId = ctx.chat.id.toString();
       await prisma.admin.update({
         where: { id: admin.id },
         data: { telegramChatId }
       });
       
+      linkingState.delete(telegramChatId);
       return ctx.reply(`✅ <b>Successfully linked to account:</b> <code>${admin.email}</code>`, { parse_mode: 'HTML' });
     } catch (error) {
       console.error('Error linking account:', error);
@@ -177,7 +183,7 @@ export const setupTelegramBot = () => {
     try {
       const admin = await getLinkedAdmin(ctx.chat.id.toString());
       if (!admin) {
-        return ctx.reply(`❌ <b>Your account is not linked.</b> Please link it first using <code>/link_account &lt;upload_id&gt;</code>.`, { parse_mode: 'HTML' });
+        return ctx.reply(`❌ <b>Your account is not linked.</b> Please link it first using <code>/link_account</code>.`, { parse_mode: 'HTML' });
       }
       
       await prisma.admin.update({
@@ -193,22 +199,10 @@ export const setupTelegramBot = () => {
 
   // 4. /remove_header Command
   bot.command('remove_header', async (ctx) => {
-    const text = ctx.message.text.trim();
-    const arg = text.replace(/^\/remove_header\s*/, '').trim();
-    if (!arg) {
-      return ctx.reply(
-        `📖 <b>Tutorial: Remove Header</b>\n\n` +
-        `Remove the custom header text you've added.\n\n` +
-        `<b>Usage:</b>\n` +
-        `<code>/remove_header yes</code>`,
-        { parse_mode: 'HTML' }
-      );
-    }
-    
     try {
       const admin = await getLinkedAdmin(ctx.chat.id.toString());
       if (!admin) {
-        return ctx.reply(`❌ <b>Your account is not linked.</b> Please link it first using <code>/link_account &lt;upload_id&gt;</code>.`, { parse_mode: 'HTML' });
+        return ctx.reply(`❌ <b>Your account is not linked.</b> Please link it first using <code>/link_account</code>.`, { parse_mode: 'HTML' });
       }
       
       await prisma.admin.update({
@@ -241,7 +235,7 @@ export const setupTelegramBot = () => {
     try {
       const admin = await getLinkedAdmin(ctx.chat.id.toString());
       if (!admin) {
-        return ctx.reply(`❌ <b>Your account is not linked.</b> Please link it first using <code>/link_account &lt;upload_id&gt;</code>.`, { parse_mode: 'HTML' });
+        return ctx.reply(`❌ <b>Your account is not linked.</b> Please link it first using <code>/link_account</code>.`, { parse_mode: 'HTML' });
       }
       
       await prisma.admin.update({
@@ -257,22 +251,10 @@ export const setupTelegramBot = () => {
 
   // 6. /remove_footer Command
   bot.command('remove_footer', async (ctx) => {
-    const text = ctx.message.text.trim();
-    const arg = text.replace(/^\/remove_footer\s*/, '').trim();
-    if (!arg) {
-      return ctx.reply(
-        `📖 <b>Tutorial: Remove Footer</b>\n\n` +
-        `Remove the custom footer text you've added.\n\n` +
-        `<b>Usage:</b>\n` +
-        `<code>/remove_footer yes</code>`,
-        { parse_mode: 'HTML' }
-      );
-    }
-    
     try {
       const admin = await getLinkedAdmin(ctx.chat.id.toString());
       if (!admin) {
-        return ctx.reply(`❌ <b>Your account is not linked.</b> Please link it first using <code>/link_account &lt;upload_id&gt;</code>.`, { parse_mode: 'HTML' });
+        return ctx.reply(`❌ <b>Your account is not linked.</b> Please link it first using <code>/link_account</code>.`, { parse_mode: 'HTML' });
       }
       
       await prisma.admin.update({
@@ -288,22 +270,10 @@ export const setupTelegramBot = () => {
 
   // 7. /enable_text Command
   bot.command('enable_text', async (ctx) => {
-    const text = ctx.message.text.trim();
-    const arg = text.replace(/^\/enable_text\s*/, '').trim();
-    if (!arg) {
-      return ctx.reply(
-        `📖 <b>Tutorial: Enable Text</b>\n\n` +
-        `Keep the surrounding text when processing messages.\n\n` +
-        `<b>Usage:</b>\n` +
-        `<code>/enable_text yes</code>`,
-        { parse_mode: 'HTML' }
-      );
-    }
-    
     try {
       const admin = await getLinkedAdmin(ctx.chat.id.toString());
       if (!admin) {
-        return ctx.reply(`❌ <b>Your account is not linked.</b> Please link it first using <code>/link_account &lt;upload_id&gt;</code>.`, { parse_mode: 'HTML' });
+        return ctx.reply(`❌ <b>Your account is not linked.</b> Please link it first using <code>/link_account</code>.`, { parse_mode: 'HTML' });
       }
       
       await prisma.admin.update({
@@ -319,22 +289,10 @@ export const setupTelegramBot = () => {
 
   // 8. /disable_text Command
   bot.command('disable_text', async (ctx) => {
-    const text = ctx.message.text.trim();
-    const arg = text.replace(/^\/disable_text\s*/, '').trim();
-    if (!arg) {
-      return ctx.reply(
-        `📖 <b>Tutorial: Disable Text</b>\n\n` +
-        `Remove surrounding text from messages and keep only the links/content.\n\n` +
-        `<b>Usage:</b>\n` +
-        `<code>/disable_text yes</code>`,
-        { parse_mode: 'HTML' }
-      );
-    }
-    
     try {
       const admin = await getLinkedAdmin(ctx.chat.id.toString());
       if (!admin) {
-        return ctx.reply(`❌ <b>Your account is not linked.</b> Please link it first using <code>/link_account &lt;upload_id&gt;</code>.`, { parse_mode: 'HTML' });
+        return ctx.reply(`❌ <b>Your account is not linked.</b> Please link it first using <code>/link_account</code>.`, { parse_mode: 'HTML' });
       }
       
       await prisma.admin.update({
@@ -350,22 +308,10 @@ export const setupTelegramBot = () => {
 
   // 9. /my_account Command
   bot.command('my_account', async (ctx) => {
-    const text = ctx.message.text.trim();
-    const arg = text.replace(/^\/my_account\s*/, '').trim();
-    if (!arg) {
-      return ctx.reply(
-        `📖 <b>Tutorial: My Account</b>\n\n` +
-        `View your account details and dashboard statistics.\n\n` +
-        `<b>Usage:</b>\n` +
-        `<code>/my_account yes</code>`,
-        { parse_mode: 'HTML' }
-      );
-    }
-    
     try {
       const admin = await getLinkedAdmin(ctx.chat.id.toString());
       if (!admin) {
-        return ctx.reply(`❌ <b>Your account is not linked.</b> Please link it first using <code>/link_account &lt;upload_id&gt;</code>.`, { parse_mode: 'HTML' });
+        return ctx.reply(`❌ <b>Your account is not linked.</b> Please link it first using <code>/link_account</code>.`, { parse_mode: 'HTML' });
       }
       
       const totalVideos = await prisma.video.count({
@@ -408,10 +354,45 @@ export const setupTelegramBot = () => {
       if (!messageObj) return;
 
       const telegramChatId = ctx.chat.id.toString();
+
+      // Extract raw text or caption from incoming message
+      const rawText = ('text' in messageObj ? messageObj.text : 'caption' in messageObj ? messageObj.caption : '') || '';
+      
+      // Ignore if it's a command, but cancel interactive linking state
+      if (rawText.trim().startsWith('/')) {
+        linkingState.delete(telegramChatId);
+        return;
+      }
+
+      // Check if user is in linking state
+      if (linkingState.get(telegramChatId)) {
+        const uploadId = rawText.trim();
+        try {
+          const admin = await prisma.admin.findUnique({
+            where: { telegramUploadId: uploadId }
+          });
+          
+          if (!admin) {
+            return ctx.reply(`❌ <b>Invalid Upload ID.</b> Please send a valid Upload ID, or send /start to cancel.`, { parse_mode: 'HTML' });
+          }
+          
+          await prisma.admin.update({
+            where: { id: admin.id },
+            data: { telegramChatId }
+          });
+          
+          linkingState.delete(telegramChatId);
+          return ctx.reply(`✅ <b>Successfully linked to account:</b> <code>${admin.email}</code>`, { parse_mode: 'HTML' });
+        } catch (error) {
+          console.error('Error linking account interactively:', error);
+          return ctx.reply(`❌ <b>An error occurred during account linking.</b>`, { parse_mode: 'HTML' });
+        }
+      }
+
       const admin = await getLinkedAdmin(telegramChatId);
 
       if (!admin) {
-        return ctx.reply(`❌ Your account is not linked. Please use <code>/link_account &lt;upload_id&gt;</code> to link your account first.`, { parse_mode: 'HTML' });
+        return ctx.reply(`❌ Your account is not linked. Please use <code>/link_account</code> to link your account first.`, { parse_mode: 'HTML' });
       }
 
       if (!admin.isActive) {
@@ -440,6 +421,21 @@ export const setupTelegramBot = () => {
 
       if (uniqueTeraboxUrls.length === 0 && uniqueDisklyUrls.length === 0 && !isVideoAttached) {
         return ctx.reply('❌ No video file or valid links (Terabox/Diskly) found in your message.');
+      }
+
+      // Queue limit check (allow max 3 active jobs per user)
+      try {
+        const activeJobs = await videoQueue.getActive();
+        const waitingJobs = await videoQueue.getWaiting();
+        const adminJobsCount = [...activeJobs, ...waitingJobs].filter(
+          job => job.data && job.data.adminId === admin.id
+        ).length;
+
+        if (adminJobsCount >= 3) {
+          return ctx.reply('You can process a maximum of 3 files at a time. Please wait until your current files finish processing before submitting more files.');
+        }
+      } catch (err) {
+        console.error('Failed to check queue limits:', err);
       }
 
       // Early daily upload limit verification
@@ -540,7 +536,9 @@ export const setupTelegramBot = () => {
           }
           const limitBytes = limitMb * 1024 * 1024;
           if (fileSize > limitBytes) {
-            return ctx.reply(`❌ Video size (${(fileSize / (1024 * 1024)).toFixed(1)} MB) exceeds the maximum Telegram upload limit of ${limitMb} MB.`);
+            const fileStr = formatSize(fileSize);
+            const limitStr = formatSize(limitBytes);
+            return ctx.reply(`❌ This file is ${fileStr}. The current supported upload limit is ${limitStr}.`);
           }
         }
 
