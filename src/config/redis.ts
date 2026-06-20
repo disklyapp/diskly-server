@@ -13,3 +13,22 @@ export const queueConnection = new Redis(redisUrl, {
   maxRetriesPerRequest: 1,
   enableReadyCheck: false,
 });
+
+// Gracefully close connections on termination signals to prevent connection leaks
+const graceShutDown = async (signal: string) => {
+  console.log(`Received ${signal}. Closing Redis connections...`);
+  try {
+    await Promise.all([
+      workerConnection.quit(),
+      queueConnection.quit(),
+    ]);
+    console.log('Redis connections closed successfully.');
+  } catch (err) {
+    console.error('Error while closing Redis connections:', err);
+  }
+};
+
+process.once('SIGINT', () => graceShutDown('SIGINT'));
+process.once('SIGTERM', () => graceShutDown('SIGTERM'));
+process.once('SIGUSR2', () => graceShutDown('SIGUSR2')); // For tsx/nodemon restarts
+
