@@ -335,7 +335,7 @@ router.get('/videos', async (req: Request, res: Response) => {
   try {
     const videos = await prisma.video.findMany({
       where: { adminId },
-      include: { admin: { select: { name: true, profilePic: true } } },
+      include: { admin: { select: { id: true, name: true, email: true, profilePic: true, createdAt: true } } },
       orderBy: { createdAt: 'desc' }
     });
     res.json(videos);
@@ -660,11 +660,14 @@ router.post('/videos/chunk/complete', async (req: Request, res: Response) => {
         adminId
       }
     });
-
+    // Fetch the video with admin details for response
+    const videoWithAdmin = await prisma.video.findUnique({
+      where: { id: video.id },
+      include: { admin: { select: { id: true, name: true, email: true, profilePic: true, createdAt: true } } }
+    });
     if (fs.existsSync(mergedFilePath)) fs.unlinkSync(mergedFilePath);
     if (fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath);
-
-    res.json(video);
+    res.json(videoWithAdmin);
   } catch (error: any) {
     if (fs.existsSync(mergedFilePath)) fs.unlinkSync(mergedFilePath);
     if (fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath);
@@ -819,12 +822,17 @@ router.post('/videos', upload.single('video'), async (req: Request, res: Respons
     const video = await prisma.video.create({
       data: { title, description, streamUrl, downloadKey, thumbnailUrl: finalThumbnailUrl, size: file.size, adminId }
     });
-    
+    // Fetch the video with admin details for response
+    const videoWithAdmin = await prisma.video.findUnique({
+      where: { id: video.id },
+      include: { admin: { select: { id: true, name: true, email: true, profilePic: true, createdAt: true } } }
+    });
+
     // Delete local temp files
     fs.unlinkSync(file.path);
     if (fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath);
 
-    res.json(video);
+    res.json(videoWithAdmin);
   } catch (error: any) {
     if (file && fs.existsSync(file.path)) fs.unlinkSync(file.path);
     if (thumbPath && fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath);
