@@ -93,10 +93,7 @@ router.get('/:key', async (req: Request, res: Response) => {
   try {
     const video = await prisma.video.findFirst({
       where: { downloadKey: key as string },
-      select: { 
-        id: true, title: true, description: true, streamUrl: true, thumbnailUrl: true, views: true, likes: true, bookmarks: true, createdAt: true, downloadKey: true, size: true,
-        admin: { select: { id: true, name: true, email: true, profilePic: true, createdAt: true } }
-      }
+      include: { admin: { select: { id: true, name: true, email: true, profilePic: true, createdAt: true } } }
     });
     if (!video) return res.status(404).json({ error: 'Video not found' });
     res.json(video);
