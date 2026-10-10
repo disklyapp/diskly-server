@@ -542,11 +542,20 @@ export const setupTelegramBot = () => {
             where: { adminId: admin.id },
             _sum: { size: true }
           });
-          const usedBytes = storageAgg._sum.size || 0;
+          const usedBytes = (admin.customStorageGb !== null && admin.customStorageGb !== undefined)
+            ? Math.round(admin.customStorageGb * 1024 * 1024 * 1024)
+            : (storageAgg._sum.size || 0);
           const maxStorageBytes = allowedStorageGb * 1024 * 1024 * 1024;
+
+          if (usedBytes >= maxStorageBytes) {
+            const usedGb = (usedBytes / (1024 * 1024 * 1024)).toFixed(2);
+            return ctx.reply(`❌ Storage quota full! You have consumed ${usedGb} GB of ${allowedStorageGb} GB allowed. Uploading more videos is disabled.`);
+          }
+
           if (usedBytes + fileSize > maxStorageBytes) {
             const usedGb = (usedBytes / (1024 * 1024 * 1024)).toFixed(2);
-            return ctx.reply(`❌ Storage limit reached! You have used ${usedGb} GB of ${allowedStorageGb} GB allowed.`);
+            const fileGb = (fileSize / (1024 * 1024 * 1024)).toFixed(2);
+            return ctx.reply(`❌ Storage limit exceeded! Current usage: ${usedGb} GB. Uploading this file (${fileGb} GB) exceeds your quota of ${allowedStorageGb} GB.`);
           }
         }
 

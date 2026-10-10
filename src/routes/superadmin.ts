@@ -463,6 +463,14 @@ router.put('/settings', async (req: Request, res: Response) => {
       update: updateData,
       create: updateData
     });
+
+    if (req.body.applyToAllExistingAdmins && updateData.defaultMaxStorageGb !== undefined) {
+      await prisma.admin.updateMany({
+        data: { maxStorageGb: updateData.defaultMaxStorageGb }
+      });
+      await logActivity('UPDATE_SETTINGS', `Applied Default Max Storage (${updateData.defaultMaxStorageGb ?? 'Unlimited'} GB) to ALL existing admins.`);
+    }
+
     await logActivity('UPDATE_SETTINGS', `Updated system settings: Earning Rate = $${setting.earningRatePer1000Views}/1k, Default Max Storage = ${setting.defaultMaxStorageGb ?? 'Unlimited'}GB, Default Max File Size = ${setting.defaultMaxFileSizeMb}MB`);
     res.json(setting);
   } catch (error: any) {
@@ -486,7 +494,10 @@ router.get('/admins', async (req: Request, res: Response) => {
     });
 
     const formattedAdmins = admins.map(admin => {
-      const totalStorage = admin.videos.reduce((sum, v) => sum + (v.size || 0), 0);
+      const actualVideoStorage = admin.videos.reduce((sum, v) => sum + (v.size || 0), 0);
+      const totalStorage = (admin.customStorageGb !== null && admin.customStorageGb !== undefined)
+        ? Math.round(admin.customStorageGb * 1024 * 1024 * 1024)
+        : actualVideoStorage;
       const totalViews = admin.videos.reduce((sum, v) => sum + (v.views || 0), 0);
       return {
         id: admin.id,
@@ -498,6 +509,7 @@ router.get('/admins', async (req: Request, res: Response) => {
         maxUploadSizeWebsite: admin.maxUploadSizeWebsite,
         maxUploadSizeTelegram: admin.maxUploadSizeTelegram,
         maxStorageGb: admin.maxStorageGb,
+        customStorageGb: admin.customStorageGb,
         maxFileSizeMb: admin.maxFileSizeMb,
         minimumPayoutThreshold: admin.minimumPayoutThreshold,
         balance: admin.balance,
@@ -506,6 +518,7 @@ router.get('/admins', async (req: Request, res: Response) => {
         createdAt: admin.createdAt,
         totalVideos: admin._count.videos,
         totalStorage: totalStorage,
+        actualVideoStorage: actualVideoStorage,
         totalViews: totalViews
       };
     });
@@ -535,7 +548,10 @@ router.get('/admins/:id', async (req: Request, res: Response) => {
 
     if (!admin) return res.status(404).json({ error: 'Admin not found' });
 
-    const totalStorage = admin.videos.reduce((sum, v) => sum + (v.size || 0), 0);
+    const actualVideoStorage = admin.videos.reduce((sum, v) => sum + (v.size || 0), 0);
+    const totalStorage = (admin.customStorageGb !== null && admin.customStorageGb !== undefined)
+      ? Math.round(admin.customStorageGb * 1024 * 1024 * 1024)
+      : actualVideoStorage;
 
     res.json({
       id: admin.id,
@@ -552,6 +568,7 @@ router.get('/admins/:id', async (req: Request, res: Response) => {
       maxUploadSizeWebsite: admin.maxUploadSizeWebsite,
       maxUploadSizeTelegram: admin.maxUploadSizeTelegram,
       maxStorageGb: admin.maxStorageGb,
+      customStorageGb: admin.customStorageGb,
       maxFileSizeMb: admin.maxFileSizeMb,
       minimumPayoutThreshold: admin.minimumPayoutThreshold,
       balance: admin.balance,
@@ -559,7 +576,8 @@ router.get('/admins/:id', async (req: Request, res: Response) => {
       isActive: admin.isActive,
       createdAt: admin.createdAt,
       totalVideos: admin._count.videos,
-      totalStorage: totalStorage
+      totalStorage: totalStorage,
+      actualVideoStorage: actualVideoStorage
     });
   } catch (error: any) {
     console.error('Error fetching admin details:', error);
@@ -593,7 +611,7 @@ router.put('/admins/:id/status', async (req: Request, res: Response) => {
 // Update any field of a specific admin (including balance and nullable limits)
 router.put('/admins/:id', async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { email, name, bankName, ifscCode, accountNumber, upiId, dailyUploadLimit, monthlyUploadLimit, maxUploadSizeWebsite, maxUploadSizeTelegram, maxStorageGb, maxFileSizeMb, minimumPayoutThreshold, balance, isActive } = req.body;
+  const { email, name, bankName, ifscCode, accountNumber, upiId, dailyUploadLimit, monthlyUploadLimit, maxUploadSizeWebsite, maxUploadSizeTelegram, maxStorageGb, customStorageGb, maxFileSizeMb, minimumPayoutThreshold, balance, isActive } = req.body;
   
   try {
     const adminId = Number(id);
@@ -616,6 +634,7 @@ router.put('/admins/:id', async (req: Request, res: Response) => {
     if (maxUploadSizeWebsite !== undefined) updateData.maxUploadSizeWebsite = maxUploadSizeWebsite === null ? null : Number(maxUploadSizeWebsite);
     if (maxUploadSizeTelegram !== undefined) updateData.maxUploadSizeTelegram = maxUploadSizeTelegram === null ? null : Number(maxUploadSizeTelegram);
     if (maxStorageGb !== undefined) updateData.maxStorageGb = maxStorageGb === null || maxStorageGb === '' ? null : Number(maxStorageGb);
+    if (customStorageGb !== undefined) updateData.customStorageGb = customStorageGb === null || customStorageGb === '' ? null : Number(customStorageGb);
     if (maxFileSizeMb !== undefined) updateData.maxFileSizeMb = maxFileSizeMb === null || maxFileSizeMb === '' ? null : Number(maxFileSizeMb);
     if (minimumPayoutThreshold !== undefined) updateData.minimumPayoutThreshold = minimumPayoutThreshold === null ? null : Number(minimumPayoutThreshold);
 

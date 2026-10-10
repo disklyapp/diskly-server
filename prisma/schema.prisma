@@ -36,6 +36,7 @@ model Admin {
   maxUploadSizeWebsite  Int?
   maxUploadSizeTelegram Int?
   maxStorageGb       Float?
+  customStorageGb    Float?
   maxFileSizeMb      Int?
   minimumPayoutThreshold Float?
   balance            Float    @default(0.0)

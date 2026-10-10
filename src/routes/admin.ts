@@ -442,12 +442,23 @@ router.post('/videos/chunk/init', async (req: Request, res: Response) => {
         where: { adminId },
         _sum: { size: true }
       });
-      const usedBytes = storageAgg._sum.size || 0;
+      const usedBytes = (admin.customStorageGb !== null && admin.customStorageGb !== undefined)
+        ? Math.round(admin.customStorageGb * 1024 * 1024 * 1024)
+        : (storageAgg._sum.size || 0);
       const maxStorageBytes = allowedStorageGb * 1024 * 1024 * 1024;
+
+      if (usedBytes >= maxStorageBytes) {
+        const usedGb = (usedBytes / (1024 * 1024 * 1024)).toFixed(2);
+        return res.status(403).json({
+          error: `Storage quota full! You have consumed ${usedGb} GB of ${allowedStorageGb} GB. Uploading more videos is blocked.`
+        });
+      }
+
       if (usedBytes + incomingSize > maxStorageBytes) {
         const usedGb = (usedBytes / (1024 * 1024 * 1024)).toFixed(2);
+        const incomingGb = (incomingSize / (1024 * 1024 * 1024)).toFixed(2);
         return res.status(400).json({
-          error: `Storage limit exceeded. You have used ${usedGb} GB of ${allowedStorageGb} GB allowed.`
+          error: `Storage limit exceeded! Current usage: ${usedGb} GB. Uploading this file (${incomingGb} GB) exceeds your quota of ${allowedStorageGb} GB.`
         });
       }
     }
@@ -736,13 +747,25 @@ router.post('/videos', upload.single('video'), async (req: Request, res: Respons
         where: { adminId },
         _sum: { size: true }
       });
-      const usedBytes = storageAgg._sum.size || 0;
+      const usedBytes = (admin.customStorageGb !== null && admin.customStorageGb !== undefined)
+        ? Math.round(admin.customStorageGb * 1024 * 1024 * 1024)
+        : (storageAgg._sum.size || 0);
       const maxStorageBytes = allowedStorageGb * 1024 * 1024 * 1024;
+
+      if (usedBytes >= maxStorageBytes) {
+        fs.unlinkSync(file.path);
+        const usedGb = (usedBytes / (1024 * 1024 * 1024)).toFixed(2);
+        return res.status(403).json({
+          error: `Storage quota full! You have consumed ${usedGb} GB of ${allowedStorageGb} GB. Uploading more videos is blocked.`
+        });
+      }
+
       if (usedBytes + file.size > maxStorageBytes) {
         fs.unlinkSync(file.path);
         const usedGb = (usedBytes / (1024 * 1024 * 1024)).toFixed(2);
+        const fileGb = (file.size / (1024 * 1024 * 1024)).toFixed(2);
         return res.status(400).json({
-          error: `Storage limit exceeded. You have used ${usedGb} GB of ${allowedStorageGb} GB allowed.`
+          error: `Storage limit exceeded! Current usage: ${usedGb} GB. Uploading this file (${fileGb} GB) exceeds your quota of ${allowedStorageGb} GB.`
         });
       }
     }
@@ -904,6 +927,7 @@ router.get('/account', async (req: Request, res: Response) => {
         maxUploadSizeWebsite: true,
         maxUploadSizeTelegram: true,
         maxStorageGb: true,
+        customStorageGb: true,
         maxFileSizeMb: true
       }
     });
@@ -929,6 +953,7 @@ router.get('/account', async (req: Request, res: Response) => {
           maxUploadSizeWebsite: true,
           maxUploadSizeTelegram: true,
           maxStorageGb: true,
+          customStorageGb: true,
           maxFileSizeMb: true
         }
       });
@@ -942,7 +967,9 @@ router.get('/account', async (req: Request, res: Response) => {
       where: { adminId },
       _sum: { size: true }
     });
-    const usedStorageBytes = storageAgg._sum.size || 0;
+    const usedStorageBytes = (admin.customStorageGb !== null && admin.customStorageGb !== undefined)
+      ? Math.round(admin.customStorageGb * 1024 * 1024 * 1024)
+      : (storageAgg._sum.size || 0);
 
     res.json({
       ...admin,
