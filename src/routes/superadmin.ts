@@ -439,14 +439,31 @@ router.get('/settings', async (req: Request, res: Response) => {
 
 // Update Settings
 router.put('/settings', async (req: Request, res: Response) => {
-  const { earningRatePer1000Views, telegramUploadEnabled, minimumPayoutThreshold, defaultMaxUploadSizeWebsite, defaultMaxUploadSizeTelegram } = req.body;
+  const {
+    earningRatePer1000Views,
+    telegramUploadEnabled,
+    minimumPayoutThreshold,
+    defaultMaxUploadSizeWebsite,
+    defaultMaxUploadSizeTelegram,
+    defaultMaxStorageGb,
+    defaultMaxFileSizeMb
+  } = req.body;
   try {
+    const updateData: any = {};
+    if (earningRatePer1000Views !== undefined) updateData.earningRatePer1000Views = Number(earningRatePer1000Views);
+    if (telegramUploadEnabled !== undefined) updateData.telegramUploadEnabled = Boolean(telegramUploadEnabled);
+    if (minimumPayoutThreshold !== undefined) updateData.minimumPayoutThreshold = Number(minimumPayoutThreshold);
+    if (defaultMaxUploadSizeWebsite !== undefined) updateData.defaultMaxUploadSizeWebsite = Number(defaultMaxUploadSizeWebsite);
+    if (defaultMaxUploadSizeTelegram !== undefined) updateData.defaultMaxUploadSizeTelegram = Number(defaultMaxUploadSizeTelegram);
+    if (defaultMaxStorageGb !== undefined) updateData.defaultMaxStorageGb = defaultMaxStorageGb === null || defaultMaxStorageGb === '' ? null : Number(defaultMaxStorageGb);
+    if (defaultMaxFileSizeMb !== undefined) updateData.defaultMaxFileSizeMb = defaultMaxFileSizeMb === null || defaultMaxFileSizeMb === '' ? 2000 : Number(defaultMaxFileSizeMb);
+
     const setting = await prisma.systemSetting.upsert({
       where: { id: 1 },
-      update: { earningRatePer1000Views, telegramUploadEnabled, minimumPayoutThreshold, defaultMaxUploadSizeWebsite: Number(defaultMaxUploadSizeWebsite), defaultMaxUploadSizeTelegram: Number(defaultMaxUploadSizeTelegram) },
-      create: { earningRatePer1000Views, telegramUploadEnabled, minimumPayoutThreshold, defaultMaxUploadSizeWebsite: Number(defaultMaxUploadSizeWebsite), defaultMaxUploadSizeTelegram: Number(defaultMaxUploadSizeTelegram) }
+      update: updateData,
+      create: updateData
     });
-    await logActivity('UPDATE_SETTINGS', `Updated system settings: Earning Rate = $${earningRatePer1000Views}/1k, Telegram Bot = ${telegramUploadEnabled}, Min Payout = $${minimumPayoutThreshold}, Default Web Max = ${defaultMaxUploadSizeWebsite}MB, Default TG Max = ${defaultMaxUploadSizeTelegram}MB`);
+    await logActivity('UPDATE_SETTINGS', `Updated system settings: Earning Rate = $${setting.earningRatePer1000Views}/1k, Default Max Storage = ${setting.defaultMaxStorageGb ?? 'Unlimited'}GB, Default Max File Size = ${setting.defaultMaxFileSizeMb}MB`);
     res.json(setting);
   } catch (error: any) {
     console.error('Error updating system settings:', error);
@@ -454,7 +471,7 @@ router.put('/settings', async (req: Request, res: Response) => {
   }
 });
 
-// Get All Admins (with aggregated storage size and videos count)
+// Get All Admins (with aggregated storage size, views, and videos count)
 router.get('/admins', async (req: Request, res: Response) => {
   try {
     const admins = await prisma.admin.findMany({
@@ -463,13 +480,14 @@ router.get('/admins', async (req: Request, res: Response) => {
           select: { videos: true }
         },
         videos: {
-          select: { size: true }
+          select: { size: true, views: true }
         }
       }
     });
 
     const formattedAdmins = admins.map(admin => {
       const totalStorage = admin.videos.reduce((sum, v) => sum + (v.size || 0), 0);
+      const totalViews = admin.videos.reduce((sum, v) => sum + (v.views || 0), 0);
       return {
         id: admin.id,
         email: admin.email,
@@ -479,13 +497,16 @@ router.get('/admins', async (req: Request, res: Response) => {
         monthlyUploadLimit: admin.monthlyUploadLimit,
         maxUploadSizeWebsite: admin.maxUploadSizeWebsite,
         maxUploadSizeTelegram: admin.maxUploadSizeTelegram,
+        maxStorageGb: admin.maxStorageGb,
+        maxFileSizeMb: admin.maxFileSizeMb,
         minimumPayoutThreshold: admin.minimumPayoutThreshold,
         balance: admin.balance,
         totalEarnings: admin.totalEarnings,
         isActive: admin.isActive,
         createdAt: admin.createdAt,
         totalVideos: admin._count.videos,
-        totalStorage: totalStorage
+        totalStorage: totalStorage,
+        totalViews: totalViews
       };
     });
 
@@ -530,6 +551,8 @@ router.get('/admins/:id', async (req: Request, res: Response) => {
       monthlyUploadLimit: admin.monthlyUploadLimit,
       maxUploadSizeWebsite: admin.maxUploadSizeWebsite,
       maxUploadSizeTelegram: admin.maxUploadSizeTelegram,
+      maxStorageGb: admin.maxStorageGb,
+      maxFileSizeMb: admin.maxFileSizeMb,
       minimumPayoutThreshold: admin.minimumPayoutThreshold,
       balance: admin.balance,
       totalEarnings: admin.totalEarnings,
@@ -570,7 +593,7 @@ router.put('/admins/:id/status', async (req: Request, res: Response) => {
 // Update any field of a specific admin (including balance and nullable limits)
 router.put('/admins/:id', async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { email, name, bankName, ifscCode, accountNumber, upiId, dailyUploadLimit, monthlyUploadLimit, maxUploadSizeWebsite, maxUploadSizeTelegram, minimumPayoutThreshold, balance, isActive } = req.body;
+  const { email, name, bankName, ifscCode, accountNumber, upiId, dailyUploadLimit, monthlyUploadLimit, maxUploadSizeWebsite, maxUploadSizeTelegram, maxStorageGb, maxFileSizeMb, minimumPayoutThreshold, balance, isActive } = req.body;
   
   try {
     const adminId = Number(id);
@@ -592,6 +615,8 @@ router.put('/admins/:id', async (req: Request, res: Response) => {
     if (monthlyUploadLimit !== undefined) updateData.monthlyUploadLimit = monthlyUploadLimit === null ? null : Number(monthlyUploadLimit);
     if (maxUploadSizeWebsite !== undefined) updateData.maxUploadSizeWebsite = maxUploadSizeWebsite === null ? null : Number(maxUploadSizeWebsite);
     if (maxUploadSizeTelegram !== undefined) updateData.maxUploadSizeTelegram = maxUploadSizeTelegram === null ? null : Number(maxUploadSizeTelegram);
+    if (maxStorageGb !== undefined) updateData.maxStorageGb = maxStorageGb === null || maxStorageGb === '' ? null : Number(maxStorageGb);
+    if (maxFileSizeMb !== undefined) updateData.maxFileSizeMb = maxFileSizeMb === null || maxFileSizeMb === '' ? null : Number(maxFileSizeMb);
     if (minimumPayoutThreshold !== undefined) updateData.minimumPayoutThreshold = minimumPayoutThreshold === null ? null : Number(minimumPayoutThreshold);
 
     const updated = await prisma.admin.update({
@@ -639,7 +664,7 @@ router.post('/admins/:id/pay', async (req: Request, res: Response) => {
 
 // Update limits for specific admin or bulk update (supporting null values for unlimited status)
 router.put('/admins/limits', async (req: Request, res: Response) => {
-  const { adminIds, dailyUploadLimit, monthlyUploadLimit, maxUploadSizeWebsite, maxUploadSizeTelegram } = req.body;
+  const { adminIds, dailyUploadLimit, monthlyUploadLimit, maxUploadSizeWebsite, maxUploadSizeTelegram, maxStorageGb, maxFileSizeMb } = req.body;
   if (!Array.isArray(adminIds)) return res.status(400).json({ error: 'adminIds must be an array' });
   
   try {
@@ -648,6 +673,8 @@ router.put('/admins/limits', async (req: Request, res: Response) => {
     if (monthlyUploadLimit !== undefined) data.monthlyUploadLimit = monthlyUploadLimit === null ? null : Number(monthlyUploadLimit);
     if (maxUploadSizeWebsite !== undefined) data.maxUploadSizeWebsite = maxUploadSizeWebsite === null ? null : Number(maxUploadSizeWebsite);
     if (maxUploadSizeTelegram !== undefined) data.maxUploadSizeTelegram = maxUploadSizeTelegram === null ? null : Number(maxUploadSizeTelegram);
+    if (maxStorageGb !== undefined) data.maxStorageGb = maxStorageGb === null || maxStorageGb === '' ? null : Number(maxStorageGb);
+    if (maxFileSizeMb !== undefined) data.maxFileSizeMb = maxFileSizeMb === null || maxFileSizeMb === '' ? null : Number(maxFileSizeMb);
 
     const updated = await prisma.admin.updateMany({
       where: { id: { in: adminIds } },
@@ -665,13 +692,37 @@ router.put('/admins/limits', async (req: Request, res: Response) => {
 router.get('/videos', async (req: Request, res: Response) => {
   try {
     const videos = await prisma.video.findMany({
-      include: { admin: { select: { email: true } } },
+      include: { admin: { select: { id: true, email: true, name: true } } },
       orderBy: { createdAt: 'desc' }
     });
     res.json(videos);
   } catch (error: any) {
     console.error('Error fetching all videos:', error);
     res.status(500).json({ error: 'Failed to fetch videos', details: error?.message || String(error) });
+  }
+});
+
+// Bulk Delete Videos globally
+router.post('/videos/bulk-delete', async (req: Request, res: Response) => {
+  const { ids } = req.body;
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'ids must be a non-empty array of video IDs' });
+  }
+  try {
+    const videoIds = ids.map(id => Number(id)).filter(id => !isNaN(id));
+    const videos = await prisma.video.findMany({
+      where: { id: { in: videoIds } }
+    });
+
+    await prisma.video.deleteMany({
+      where: { id: { in: videoIds } }
+    });
+
+    await logActivity('BULK_DELETE_VIDEOS', `Superadmin bulk deleted ${videos.length} videos.`);
+    res.json({ message: `Successfully deleted ${videos.length} videos`, count: videos.length });
+  } catch (error: any) {
+    console.error('Error bulk deleting videos:', error);
+    res.status(500).json({ error: 'Failed to bulk delete videos', details: error?.message || String(error) });
   }
 });
 

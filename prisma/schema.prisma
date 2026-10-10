@@ -14,6 +14,8 @@ model SystemSetting {
   minimumPayoutThreshold        Float   @default(10.0)
   defaultMaxUploadSizeWebsite   Int     @default(500)
   defaultMaxUploadSizeTelegram  Int     @default(500)
+  defaultMaxStorageGb           Float?  @default(100.0)
+  defaultMaxFileSizeMb          Int     @default(2000)
 }
 
 model Admin {
@@ -33,6 +35,8 @@ model Admin {
   monthlyUploadLimit Int?
   maxUploadSizeWebsite  Int?
   maxUploadSizeTelegram Int?
+  maxStorageGb       Float?
+  maxFileSizeMb      Int?
   minimumPayoutThreshold Float?
   balance            Float    @default(0.0)
   totalEarnings      Float    @default(0.0)

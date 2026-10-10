@@ -414,7 +414,12 @@ export const setupTelegramBot = () => {
       const uniqueTeraboxUrls = Array.from(new Set(teraboxUrls));
       const uniqueDisklyUrls = Array.from(new Set(disklyUrls));
 
-      const isVideoAttached = 'video' in messageObj;
+      const isVideoDirect = 'video' in messageObj;
+      const isVideoDocument = 'document' in messageObj && (
+        Boolean(messageObj.document.mime_type && messageObj.document.mime_type.startsWith('video/')) ||
+        Boolean(/\.(mp4|mkv|avi|mov|webm|flv|m4v|3gp|ts)$/i.test(messageObj.document.file_name || ''))
+      );
+      const isVideoAttached = isVideoDirect || isVideoDocument;
 
       if (uniqueTeraboxUrls.length === 0 && uniqueDisklyUrls.length === 0 && !isVideoAttached) {
         return ctx.reply('❌ No video file or valid links (Terabox/Diskly) found in your message.');
@@ -470,11 +475,7 @@ export const setupTelegramBot = () => {
         });
 
       } else if (uniqueDisklyUrls.length > 0) {
-        if (admin.dailyUploadLimit !== null && videosToday + uniqueDisklyUrls.length > admin.dailyUploadLimit) {
-          return ctx.reply(`❌ Daily upload limit exceeded. You can only upload ${admin.dailyUploadLimit - videosToday} more video(s) today.`);
-        }
-
-        const processingMsg = await ctx.reply(`🔄 Cloning ${uniqueDisklyUrls.length} Diskly link(s)...`);
+        const processingMsg = await ctx.reply(`🔄 Referencing ${uniqueDisklyUrls.length} Diskly link(s)...`);
         const newLinks: string[] = [];
         let replacedText = rawText;
 
@@ -519,29 +520,39 @@ export const setupTelegramBot = () => {
         }
 
       } else if (isVideoAttached) {
-        if (admin.dailyUploadLimit !== null && videosToday >= admin.dailyUploadLimit) {
-          return ctx.reply('❌ You have reached your daily upload limit.');
+        const mediaFile = isVideoDirect ? messageObj.video : messageObj.document;
+        const fileSize = mediaFile?.file_size || 0;
+        
+        const setting = await prisma.systemSetting.findUnique({ where: { id: 1 } });
+        const maxFileMb = admin.maxFileSizeMb ?? setting?.defaultMaxFileSizeMb ?? 2000;
+        const maxFileBytes = maxFileMb * 1024 * 1024;
+        
+        if (fileSize > 0 && fileSize > maxFileBytes) {
+          const fileStr = formatSize(fileSize);
+          const limitStr = formatSize(maxFileBytes);
+          return ctx.reply(`❌ This file is ${fileStr}. The maximum allowed file size is ${limitStr}.`);
         }
 
-        const fileSize = messageObj.video.file_size || 0;
-        if (fileSize > 0) {
-          const adminMaxTelegram = admin.maxUploadSizeTelegram ?? 0;
-          let limitMb = adminMaxTelegram;
-          if (limitMb <= 0) {
-            const setting = await prisma.systemSetting.findUnique({ where: { id: 1 } });
-            limitMb = setting?.defaultMaxUploadSizeTelegram || 200;
-          }
-          const limitBytes = limitMb * 1024 * 1024;
-          if (fileSize > limitBytes) {
-            const fileStr = formatSize(fileSize);
-            const limitStr = formatSize(limitBytes);
-            return ctx.reply(`❌ This file is ${fileStr}. The current supported upload limit is ${limitStr}.`);
+        const allowedStorageGb = admin.maxStorageGb !== undefined && admin.maxStorageGb !== null
+          ? admin.maxStorageGb
+          : (setting?.defaultMaxStorageGb ?? null);
+
+        if (allowedStorageGb !== null && allowedStorageGb > 0 && fileSize > 0) {
+          const storageAgg = await prisma.video.aggregate({
+            where: { adminId: admin.id },
+            _sum: { size: true }
+          });
+          const usedBytes = storageAgg._sum.size || 0;
+          const maxStorageBytes = allowedStorageGb * 1024 * 1024 * 1024;
+          if (usedBytes + fileSize > maxStorageBytes) {
+            const usedGb = (usedBytes / (1024 * 1024 * 1024)).toFixed(2);
+            return ctx.reply(`❌ Storage limit reached! You have used ${usedGb} GB of ${allowedStorageGb} GB allowed.`);
           }
         }
 
         const downloadKey = nanoid(10);
-        const fileName = messageObj.video.file_name || 'Telegram Upload';
-        const statusMsg = await ctx.reply(`⏳ <b>Added to queue:</b> Processing direct video upload...`, { parse_mode: 'HTML' });
+        const fileName = mediaFile?.file_name || (isVideoDirect ? 'Telegram Video' : 'Telegram Video Document');
+        const statusMsg = await ctx.reply(`⏳ <b>Added to queue:</b> Processing video upload (${fileName})...`, { parse_mode: 'HTML' });
 
         await videoQueue.add('video-upload', {
           type: 'video',

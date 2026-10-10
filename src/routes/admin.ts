@@ -8,13 +8,8 @@ import multer from 'multer';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
 import fs from 'fs';
-import ffmpeg from 'fluent-ffmpeg';
-import ffmpegStatic from 'ffmpeg-static';
 import path from 'path';
-
-if (ffmpegStatic) {
-  ffmpeg.setFfmpegPath(ffmpegStatic as unknown as string);
-}
+import ffmpeg, { normalizeVideoFormat, transcodeToStreamableMp4 } from '../utils/ffmpeg.js';
 
 const uploadDir = 'uploads';
 if (!fs.existsSync(uploadDir)) {
@@ -427,37 +422,33 @@ router.post('/videos/chunk/init', async (req: Request, res: Response) => {
     const admin = await prisma.admin.findUnique({ where: { id: adminId } });
     if (!admin) return res.status(404).json({ error: 'Admin not found' });
 
-    // Check size limit
-    let limitMb = admin.maxUploadSizeWebsite;
-    if (limitMb === null || limitMb === undefined) {
-      const setting = await prisma.systemSetting.findUnique({ where: { id: 1 } });
-      limitMb = setting?.defaultMaxUploadSizeWebsite || 500;
-    }
-    const limitBytes = limitMb * 1024 * 1024;
-    if (fileSize && Number(fileSize) > limitBytes) {
-      return res.status(400).json({ error: `Video size exceeds the maximum limit of ${limitMb} MB.` });
+    const setting = await prisma.systemSetting.findUnique({ where: { id: 1 } });
+
+    // 1. Check Max Per-File Size Limit
+    const maxFileMb = admin.maxFileSizeMb ?? setting?.defaultMaxFileSizeMb ?? 2000;
+    const maxFileBytes = maxFileMb * 1024 * 1024;
+    const incomingSize = fileSize ? Number(fileSize) : 0;
+    if (incomingSize > maxFileBytes) {
+      return res.status(400).json({ error: `File size exceeds the maximum allowed limit of ${maxFileMb} MB.` });
     }
 
-    // Check daily / monthly limits
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    // 2. Check Storage-Based Limit
+    const allowedStorageGb = admin.maxStorageGb !== undefined && admin.maxStorageGb !== null
+      ? admin.maxStorageGb
+      : (setting?.defaultMaxStorageGb ?? null);
 
-    if (admin.dailyUploadLimit !== null && admin.dailyUploadLimit !== undefined) {
-      const videosToday = await prisma.video.count({
-        where: { adminId, createdAt: { gte: today } }
+    if (allowedStorageGb !== null && allowedStorageGb > 0) {
+      const storageAgg = await prisma.video.aggregate({
+        where: { adminId },
+        _sum: { size: true }
       });
-      if (videosToday >= admin.dailyUploadLimit) {
-        return res.status(400).json({ error: 'Daily upload limit reached' });
-      }
-    }
-
-    if (admin.monthlyUploadLimit !== null && admin.monthlyUploadLimit !== undefined) {
-      const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-      const videosThisMonth = await prisma.video.count({
-        where: { adminId, createdAt: { gte: firstDayOfMonth } }
-      });
-      if (videosThisMonth >= admin.monthlyUploadLimit) {
-        return res.status(400).json({ error: 'Monthly upload limit reached' });
+      const usedBytes = storageAgg._sum.size || 0;
+      const maxStorageBytes = allowedStorageGb * 1024 * 1024 * 1024;
+      if (usedBytes + incomingSize > maxStorageBytes) {
+        const usedGb = (usedBytes / (1024 * 1024 * 1024)).toFixed(2);
+        return res.status(400).json({
+          error: `Storage limit exceeded. You have used ${usedGb} GB of ${allowedStorageGb} GB allowed.`
+        });
       }
     }
 
@@ -504,6 +495,7 @@ router.post('/videos/chunk/upload', upload.single('video'), async (req: Request,
 
 // Complete Chunked Upload
 router.post('/videos/chunk/complete', async (req: Request, res: Response) => {
+  req.socket.setTimeout(0); // Prevent socket timeout for processing large files
   const adminId = (req as any).adminId;
   const { uploadId, title, filename, totalChunks, description } = req.body;
 
@@ -576,17 +568,36 @@ router.post('/videos/chunk/complete', async (req: Request, res: Response) => {
     const mergedStats = fs.statSync(mergedFilePath);
 
     const downloadKey = nanoid(10);
-    const fileExtension = filename ? filename.split('.').pop() : 'mp4';
-    const objectKey = `${downloadKey}.${fileExtension}`;
+    const normalized = normalizeVideoFormat(undefined, filename);
+    let finalMergedPath = mergedFilePath;
+    let finalObjectKey = `${downloadKey}.${normalized.ext}`;
+    let finalContentType = normalized.mimeType;
+
+    if (normalized.needsTranscoding) {
+      const transcodedKey = `${downloadKey}.mp4`;
+      const transcodedPath = path.join(uploadDir, transcodedKey);
+      try {
+        await transcodeToStreamableMp4(mergedFilePath, transcodedPath);
+        if (fs.existsSync(mergedFilePath)) fs.unlinkSync(mergedFilePath);
+        finalMergedPath = transcodedPath;
+        finalObjectKey = transcodedKey;
+        finalContentType = 'video/mp4';
+      } catch (transcodeErr) {
+        console.warn('Transcoding fallback to original file:', transcodeErr);
+      }
+    }
+
+    const finalStats = fs.statSync(finalMergedPath);
     const thumbObjectKey = `${downloadKey}_thumb.png`;
     thumbPath = path.join(uploadDir, thumbObjectKey);
 
-    // Extract Thumbnail using fluent-ffmpeg
+    // Extract Thumbnail using fluent-ffmpeg with fast input seek
     try {
       await new Promise<void>((resolve, reject) => {
-        ffmpeg(mergedFilePath)
+        ffmpeg(finalMergedPath)
+          .inputOptions(['-ss 00:00:01.000'])
           .screenshots({
-            timestamps: ['00:00:01.000'],
+            timestamps: ['00:00:00.000'],
             filename: thumbObjectKey,
             folder: uploadDir,
             size: '320x240'
@@ -598,18 +609,18 @@ router.post('/videos/chunk/complete', async (req: Request, res: Response) => {
       console.error('Failed to generate thumbnail via ffmpeg:', ffmpegErr);
     }
 
-    // Upload to Backblaze B2 (Video)
-    const fileStream = fs.createReadStream(mergedFilePath);
+    // Upload to Backblaze B2 (Video) - optimized for large files (> 1.5 GB)
+    const fileStream = fs.createReadStream(finalMergedPath);
     const videoUpload = new Upload({
       client: s3,
       params: {
         Bucket: process.env.B2_BUCKET_NAME || 'disklyserver',
-        Key: objectKey,
+        Key: finalObjectKey,
         Body: fileStream,
-        ContentType: 'video/mp4',
+        ContentType: finalContentType,
       },
       queueSize: 4,
-      partSize: 5 * 1024 * 1024,
+      partSize: 20 * 1024 * 1024, // 20MB parts to prevent socket timeout on large files
       leavePartsOnError: false,
     });
 
@@ -633,7 +644,7 @@ router.post('/videos/chunk/complete', async (req: Request, res: Response) => {
       await Promise.all(uploadPromises);
     } catch (s3Error: any) {
       console.error('Detailed B2 Upload Error:', s3Error);
-      if (fs.existsSync(mergedFilePath)) fs.unlinkSync(mergedFilePath);
+      if (fs.existsSync(finalMergedPath)) fs.unlinkSync(finalMergedPath);
       if (fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath);
       return res.status(500).json({ error: 'Failed to upload video to storage', details: s3Error?.message || String(s3Error) });
     }
@@ -642,10 +653,10 @@ router.post('/videos/chunk/complete', async (req: Request, res: Response) => {
     let finalThumbnailUrl = '';
     const domain = process.env.CLOUDFLARE_DOMAIN || '';
     if (domain.includes('/file/')) {
-      streamUrl = `${domain.replace(/\/$/, '')}/${objectKey}`;
+      streamUrl = `${domain.replace(/\/$/, '')}/${finalObjectKey}`;
       if (fs.existsSync(thumbPath)) finalThumbnailUrl = `${domain.replace(/\/$/, '')}/${thumbObjectKey}`;
     } else {
-      streamUrl = `https://${domain.replace(/\/$/, '')}/file/${process.env.B2_BUCKET_NAME}/${objectKey}`;
+      streamUrl = `https://${domain.replace(/\/$/, '')}/file/${process.env.B2_BUCKET_NAME}/${finalObjectKey}`;
       if (fs.existsSync(thumbPath)) finalThumbnailUrl = `https://${domain.replace(/\/$/, '')}/file/${process.env.B2_BUCKET_NAME}/${thumbObjectKey}`;
     }
 
@@ -656,7 +667,7 @@ router.post('/videos/chunk/complete', async (req: Request, res: Response) => {
         streamUrl,
         downloadKey,
         thumbnailUrl: finalThumbnailUrl,
-        size: mergedStats.size,
+        size: finalStats.size,
         adminId
       }
     });
@@ -705,54 +716,65 @@ router.post('/videos', upload.single('video'), async (req: Request, res: Respons
       return res.status(404).json({ error: 'Admin not found' });
     }
 
-    // Check size limit
-    let limitMb = admin.maxUploadSizeWebsite;
-    if (limitMb === null || limitMb === undefined) {
-      const setting = await prisma.systemSetting.findUnique({ where: { id: 1 } });
-      limitMb = setting?.defaultMaxUploadSizeWebsite || 500;
-    }
-    const limitBytes = limitMb * 1024 * 1024;
-    if (file.size > limitBytes) {
+    const setting = await prisma.systemSetting.findUnique({ where: { id: 1 } });
+
+    // 1. Check Max Per-File Size Limit
+    const maxFileMb = admin.maxFileSizeMb ?? setting?.defaultMaxFileSizeMb ?? 2000;
+    const maxFileBytes = maxFileMb * 1024 * 1024;
+    if (file.size > maxFileBytes) {
       fs.unlinkSync(file.path);
-      return res.status(400).json({ error: `Video size exceeds the maximum limit of ${limitMb} MB.` });
+      return res.status(400).json({ error: `Video size exceeds the maximum limit of ${maxFileMb} MB.` });
     }
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    // 2. Check Storage-Based Limit
+    const allowedStorageGb = admin.maxStorageGb !== undefined && admin.maxStorageGb !== null
+      ? admin.maxStorageGb
+      : (setting?.defaultMaxStorageGb ?? null);
 
-    // Check daily upload limit
-    if (admin.dailyUploadLimit !== null && admin.dailyUploadLimit !== undefined) {
-      const videosToday = await prisma.video.count({
-        where: { adminId, createdAt: { gte: today } }
+    if (allowedStorageGb !== null && allowedStorageGb > 0) {
+      const storageAgg = await prisma.video.aggregate({
+        where: { adminId },
+        _sum: { size: true }
       });
-      if (videosToday >= admin.dailyUploadLimit) {
+      const usedBytes = storageAgg._sum.size || 0;
+      const maxStorageBytes = allowedStorageGb * 1024 * 1024 * 1024;
+      if (usedBytes + file.size > maxStorageBytes) {
         fs.unlinkSync(file.path);
-        return res.status(400).json({ error: 'Daily upload limit reached' });
-      }
-    }
-
-    // Check monthly upload limit
-    if (admin.monthlyUploadLimit !== null && admin.monthlyUploadLimit !== undefined) {
-      const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-      const videosThisMonth = await prisma.video.count({
-        where: { adminId, createdAt: { gte: firstDayOfMonth } }
-      });
-      if (videosThisMonth >= admin.monthlyUploadLimit) {
-        fs.unlinkSync(file.path);
-        return res.status(400).json({ error: 'Monthly upload limit reached' });
+        const usedGb = (usedBytes / (1024 * 1024 * 1024)).toFixed(2);
+        return res.status(400).json({
+          error: `Storage limit exceeded. You have used ${usedGb} GB of ${allowedStorageGb} GB allowed.`
+        });
       }
     }
 
     const downloadKey = nanoid(10);
-    const fileExtension = file.originalname.split('.').pop();
-    const objectKey = `${downloadKey}.${fileExtension}`;
+    const normalized = normalizeVideoFormat(file.mimetype, file.originalname);
+    let finalFilePath = file.path;
+    let finalObjectKey = `${downloadKey}.${normalized.ext}`;
+    let finalContentType = normalized.mimeType;
+
+    if (normalized.needsTranscoding) {
+      const transcodedKey = `${downloadKey}.mp4`;
+      const transcodedPath = path.join(uploadDir, transcodedKey);
+      try {
+        await transcodeToStreamableMp4(file.path, transcodedPath);
+        if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+        finalFilePath = transcodedPath;
+        finalObjectKey = transcodedKey;
+        finalContentType = 'video/mp4';
+      } catch (transcodeErr) {
+        console.warn('Transcoding fallback to original file:', transcodeErr);
+      }
+    }
+
+    const finalStats = fs.statSync(finalFilePath);
     const thumbObjectKey = `${downloadKey}_thumb.png`;
     thumbPath = path.join(uploadDir, thumbObjectKey);
 
     // Extract Thumbnail using fluent-ffmpeg
     try {
       await new Promise<void>((resolve, reject) => {
-        ffmpeg(file.path)
+        ffmpeg(finalFilePath)
           .screenshots({
             timestamps: ['00:00:01.000'],
             filename: thumbObjectKey,
@@ -769,14 +791,14 @@ router.post('/videos', upload.single('video'), async (req: Request, res: Respons
     }
 
     // Upload to Backblaze B2 (Video)
-    const fileStream = fs.createReadStream(file.path);
+    const fileStream = fs.createReadStream(finalFilePath);
     const videoUpload = new Upload({
       client: s3,
       params: {
         Bucket: process.env.B2_BUCKET_NAME || 'disklyserver',
-        Key: objectKey,
+        Key: finalObjectKey,
         Body: fileStream,
-        ContentType: file.mimetype,
+        ContentType: finalContentType,
       },
       queueSize: 4,
       partSize: 5 * 1024 * 1024,
@@ -803,7 +825,7 @@ router.post('/videos', upload.single('video'), async (req: Request, res: Respons
       await Promise.all(uploadPromises);
     } catch (s3Error: any) {
       console.error('Detailed B2 Upload Error:', s3Error);
-      fs.unlinkSync(file.path);
+      if (fs.existsSync(finalFilePath)) fs.unlinkSync(finalFilePath);
       if (fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath);
       return res.status(500).json({ error: 'Failed to upload video to storage', details: s3Error?.message || String(s3Error) });
     }
@@ -812,15 +834,15 @@ router.post('/videos', upload.single('video'), async (req: Request, res: Respons
     let finalThumbnailUrl = thumbnailUrl || '';
     const domain = process.env.CLOUDFLARE_DOMAIN || '';
     if (domain.includes('/file/')) {
-      streamUrl = `${domain.replace(/\/$/, '')}/${objectKey}`;
+      streamUrl = `${domain.replace(/\/$/, '')}/${finalObjectKey}`;
       if (!thumbnailUrl && fs.existsSync(thumbPath)) finalThumbnailUrl = `${domain.replace(/\/$/, '')}/${thumbObjectKey}`;
     } else {
-      streamUrl = `https://${domain.replace(/\/$/, '')}/file/${process.env.B2_BUCKET_NAME}/${objectKey}`;
+      streamUrl = `https://${domain.replace(/\/$/, '')}/file/${process.env.B2_BUCKET_NAME}/${finalObjectKey}`;
       if (!thumbnailUrl && fs.existsSync(thumbPath)) finalThumbnailUrl = `https://${domain.replace(/\/$/, '')}/file/${process.env.B2_BUCKET_NAME}/${thumbObjectKey}`;
     }
 
     const video = await prisma.video.create({
-      data: { title, description, streamUrl, downloadKey, thumbnailUrl: finalThumbnailUrl, size: file.size, adminId }
+      data: { title, description, streamUrl, downloadKey, thumbnailUrl: finalThumbnailUrl, size: finalStats.size, adminId }
     });
     // Fetch the video with admin details for response
     const videoWithAdmin = await prisma.video.findUnique({
@@ -880,7 +902,9 @@ router.get('/account', async (req: Request, res: Response) => {
         balance: true,
         shareId: true,
         maxUploadSizeWebsite: true,
-        maxUploadSizeTelegram: true
+        maxUploadSizeTelegram: true,
+        maxStorageGb: true,
+        maxFileSizeMb: true
       }
     });
 
@@ -903,7 +927,9 @@ router.get('/account', async (req: Request, res: Response) => {
           balance: true,
           shareId: true,
           maxUploadSizeWebsite: true,
-          maxUploadSizeTelegram: true
+          maxUploadSizeTelegram: true,
+          maxStorageGb: true,
+          maxFileSizeMb: true
         }
       });
       admin = updatedAdmin;
@@ -912,9 +938,18 @@ router.get('/account', async (req: Request, res: Response) => {
     const setting = await prisma.systemSetting.findUnique({ where: { id: 1 } });
     const minimumPayoutThreshold = setting?.minimumPayoutThreshold || 10.0;
 
+    const storageAgg = await prisma.video.aggregate({
+      where: { adminId },
+      _sum: { size: true }
+    });
+    const usedStorageBytes = storageAgg._sum.size || 0;
+
     res.json({
       ...admin,
+      usedStorageBytes,
       minimumPayoutThreshold,
+      defaultMaxStorageGb: setting?.defaultMaxStorageGb ?? 100.0,
+      defaultMaxFileSizeMb: setting?.defaultMaxFileSizeMb ?? 2000,
       defaultMaxUploadSizeWebsite: setting?.defaultMaxUploadSizeWebsite || 500,
       defaultMaxUploadSizeTelegram: setting?.defaultMaxUploadSizeTelegram || 500
     });

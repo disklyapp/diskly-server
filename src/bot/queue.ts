@@ -21,6 +21,9 @@ if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
+import { normalizeVideoFormat, transcodeToStreamableMp4, extractThumbnail } from '../utils/ffmpeg.js';
+export { normalizeVideoFormat };
+
 export const videoQueue = new Queue('video-processing', {
   connection: queueConnection as any,
 });
@@ -58,26 +61,47 @@ export const videoWorker = new Worker(
           throw new Error('Video message or media not found in Telegram.');
         }
 
-        let ext = 'mp4';
-        let mimeType = 'video/mp4';
+        let normalized = normalizeVideoFormat('', job.data?.fileName);
+        let ext = normalized.ext;
+        let mimeType = normalized.mimeType;
         const media = message.media as any;
         if (media && media.document) {
-          mimeType = media.document.mimeType || 'video/mp4';
-          ext = mimeType.split('/')[1] || 'mp4';
+          const rawMime = media.document.mimeType || 'video/mp4';
+          let origFileName = '';
+          if (Array.isArray(media.document.attributes)) {
+            const fileAttr = media.document.attributes.find((attr: any) => attr.fileName);
+            if (fileAttr) origFileName = fileAttr.fileName;
+          }
+          normalized = normalizeVideoFormat(rawMime, origFileName || (job.data && job.data.fileName));
+          ext = normalized.ext;
+          mimeType = normalized.mimeType;
 
           // Validate size limit before downloading
           const fileSize = Number(media.document.size || 0);
           if (fileSize > 0) {
             const admin = await prisma.admin.findUnique({ where: { id: adminId } });
-            const adminMaxTelegram = admin?.maxUploadSizeTelegram ?? 0;
-            let limitMb = adminMaxTelegram;
-            if (limitMb <= 0) {
-              const setting = await prisma.systemSetting.findUnique({ where: { id: 1 } });
-              limitMb = setting?.defaultMaxUploadSizeTelegram || 200;
-            }
-            const limitBytes = limitMb * 1024 * 1024;
+            const setting = await prisma.systemSetting.findUnique({ where: { id: 1 } });
+            const maxFileMb = admin?.maxFileSizeMb ?? setting?.defaultMaxFileSizeMb ?? 2000;
+            const limitBytes = maxFileMb * 1024 * 1024;
             if (fileSize > limitBytes) {
-              throw new Error(`This file is ${formatSize(fileSize)}. The current supported upload limit is ${formatSize(limitBytes)}.`);
+              throw new Error(`This file is ${formatSize(fileSize)}. The maximum allowed file size is ${formatSize(limitBytes)}.`);
+            }
+
+            const allowedStorageGb = admin?.maxStorageGb !== undefined && admin?.maxStorageGb !== null
+              ? admin.maxStorageGb
+              : (setting?.defaultMaxStorageGb ?? null);
+
+            if (allowedStorageGb !== null && allowedStorageGb > 0) {
+              const storageAgg = await prisma.video.aggregate({
+                where: { adminId },
+                _sum: { size: true }
+              });
+              const usedBytes = storageAgg._sum.size || 0;
+              const maxStorageBytes = allowedStorageGb * 1024 * 1024 * 1024;
+              if (usedBytes + fileSize > maxStorageBytes) {
+                const usedGb = (usedBytes / (1024 * 1024 * 1024)).toFixed(2);
+                throw new Error(`Storage limit reached! You have used ${usedGb} GB of ${allowedStorageGb} GB allowed.`);
+              }
             }
           }
         }
@@ -117,16 +141,37 @@ export const videoWorker = new Worker(
           console.error('Failed to download video thumbnail via GramJS:', err);
         }
 
+        let finalFilePath = localFilePath;
+        let finalObjectKey = objectKey;
+        let finalMimeType = mimeType;
+
+        if (normalized.needsTranscoding) {
+          await updateStatus('⚙️ <b>Optimizing & transcoding to streamable MP4...</b>');
+          const transcodedKey = `${downloadKey}.mp4`;
+          const transcodedPath = path.join(uploadDir, transcodedKey);
+          try {
+            await transcodeToStreamableMp4(localFilePath, transcodedPath, (pct) => {
+              updateStatus(`⚙️ <b>Transcoding video:</b> ${pct}%`).catch(() => {});
+            });
+            if (fs.existsSync(localFilePath)) fs.unlinkSync(localFilePath);
+            finalFilePath = transcodedPath;
+            finalObjectKey = transcodedKey;
+            finalMimeType = 'video/mp4';
+          } catch (transcodeErr) {
+            console.warn('Transcoding fallback to original file:', transcodeErr);
+          }
+        }
+
         await updateStatus('📤 <b>Uploading to Diskly Server...</b>');
 
-        const fileStream = fs.createReadStream(localFilePath);
+        const fileStream = fs.createReadStream(finalFilePath);
         const videoUpload = new Upload({
           client: s3,
           params: {
             Bucket: process.env.B2_BUCKET_NAME || 'disklyserver',
-            Key: objectKey,
+            Key: finalObjectKey,
             Body: fileStream,
-            ContentType: mimeType,
+            ContentType: finalMimeType,
           },
           queueSize: 4,
           partSize: 5 * 1024 * 1024,
@@ -153,17 +198,17 @@ export const videoWorker = new Worker(
         const domain = process.env.CLOUDFLARE_DOMAIN || '';
 
         if (domain.includes('/file/')) {
-          streamUrl = `${domain.replace(/\/$/, '')}/${objectKey}`;
+          streamUrl = `${domain.replace(/\/$/, '')}/${finalObjectKey}`;
           if (localThumbPath) finalThumbnailUrl = `${domain.replace(/\/$/, '')}/${thumbObjectKey}`;
         } else {
-          streamUrl = `https://${domain.replace(/\/$/, '')}/file/${process.env.B2_BUCKET_NAME}/${objectKey}`;
+          streamUrl = `https://${domain.replace(/\/$/, '')}/file/${process.env.B2_BUCKET_NAME}/${finalObjectKey}`;
           if (localThumbPath) finalThumbnailUrl = `https://${domain.replace(/\/$/, '')}/file/${process.env.B2_BUCKET_NAME}/${thumbObjectKey}`;
         }
 
         const mediaObj = message.media as any;
-        const fileSize = (mediaObj && mediaObj.document) 
-          ? Number(mediaObj.document.size) 
-          : fs.statSync(localFilePath).size;
+        const fileSize = fs.existsSync(finalFilePath)
+          ? fs.statSync(finalFilePath).size
+          : ((mediaObj && mediaObj.document) ? Number(mediaObj.document.size) : 0);
 
         await prisma.video.create({
           data: {
@@ -249,22 +294,35 @@ export const videoWorker = new Worker(
           const fileSize = fileInfo.size ? Number(fileInfo.size) : 0;
           if (fileSize > 0) {
             const admin = await prisma.admin.findUnique({ where: { id: adminId } });
-            const adminMaxTelegram = admin?.maxUploadSizeTelegram ?? 0;
-            let limitMb = adminMaxTelegram;
-            if (limitMb <= 0) {
-              const setting = await prisma.systemSetting.findUnique({ where: { id: 1 } });
-              limitMb = setting?.defaultMaxUploadSizeTelegram || 200;
-            }
-            const limitBytes = limitMb * 1024 * 1024;
+            const setting = await prisma.systemSetting.findUnique({ where: { id: 1 } });
+            const maxFileMb = admin?.maxFileSizeMb ?? setting?.defaultMaxFileSizeMb ?? 2000;
+            const limitBytes = maxFileMb * 1024 * 1024;
             if (fileSize > limitBytes) {
-              throw new Error(`This file is ${formatSize(fileSize)}. The current supported upload limit is ${formatSize(limitBytes)}.`);
+              throw new Error(`This file is ${formatSize(fileSize)}. The maximum allowed file size is ${formatSize(limitBytes)}.`);
+            }
+
+            const allowedStorageGb = admin?.maxStorageGb !== undefined && admin?.maxStorageGb !== null
+              ? admin.maxStorageGb
+              : (setting?.defaultMaxStorageGb ?? null);
+
+            if (allowedStorageGb !== null && allowedStorageGb > 0) {
+              const storageAgg = await prisma.video.aggregate({
+                where: { adminId },
+                _sum: { size: true }
+              });
+              const usedBytes = storageAgg._sum.size || 0;
+              const maxStorageBytes = allowedStorageGb * 1024 * 1024 * 1024;
+              if (usedBytes + fileSize > maxStorageBytes) {
+                const usedGb = (usedBytes / (1024 * 1024 * 1024)).toFixed(2);
+                throw new Error(`Storage limit reached! You have used ${usedGb} GB of ${allowedStorageGb} GB allowed.`);
+              }
             }
           }
 
           await updateStatus(`⏳ <b>Downloading Terabox video [${i + 1}/${urls.length}]...</b>`);
 
-          const ext = fileInfo.name ? fileInfo.name.split('.').pop() : 'mp4';
-          const objectKey = `${downloadKey}.${ext}`;
+          const normalized = normalizeVideoFormat('', fileInfo.name);
+          const objectKey = `${downloadKey}.${normalized.ext}`;
           const localFilePath = path.join(uploadDir, objectKey);
 
           const downloadResponse = await fetch(downloadUrl);
@@ -299,7 +357,7 @@ export const videoWorker = new Worker(
               Bucket: process.env.B2_BUCKET_NAME || 'disklyserver',
               Key: objectKey,
               Body: fileStream,
-              ContentType: 'video/mp4',
+              ContentType: normalized.mimeType,
             },
             queueSize: 4,
             partSize: 5 * 1024 * 1024,
