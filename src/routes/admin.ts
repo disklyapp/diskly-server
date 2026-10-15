@@ -11,6 +11,7 @@ import fs from 'fs';
 import path from 'path';
 import ffmpeg, { normalizeVideoFormat, transcodeToStreamableMp4 } from '../utils/ffmpeg.js';
 import { authLimiter, uploadLimiter } from '../middleware/security.js';
+import { attachSecureUrlsToVideo, attachSecureUrlsToVideos } from '../utils/secureStorage.js';
 
 const uploadDir = 'uploads';
 if (!fs.existsSync(uploadDir)) {
@@ -334,7 +335,8 @@ router.get('/videos', async (req: Request, res: Response) => {
       include: { admin: { select: { id: true, name: true, email: true, profilePic: true, createdAt: true } } },
       orderBy: { createdAt: 'desc' }
     });
-    res.json(videos);
+    const securedVideos = await attachSecureUrlsToVideos(videos);
+    res.json(securedVideos);
   } catch (error: any) {
     console.error('Error fetching admin videos:', error);
     res.status(500).json({ error: 'Failed to fetch videos', details: error?.message || String(error) });
@@ -351,7 +353,8 @@ router.get('/videos/:id', async (req: Request, res: Response) => {
       include: { admin: { select: { name: true, profilePic: true } } }
     });
     if (!video) return res.status(404).json({ error: 'Video not found' });
-    res.json(video);
+    const securedVideo = await attachSecureUrlsToVideo(video);
+    res.json(securedVideo);
   } catch (error: any) {
     console.error('Error fetching video:', error);
     res.status(500).json({ error: 'Failed to fetch video', details: error?.message || String(error) });

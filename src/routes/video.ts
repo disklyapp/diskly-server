@@ -1,9 +1,11 @@
 import { Router, Request, Response } from 'express';
 import prisma from '../config/prisma.js';
 import { isViewEligible, isLikeEligible } from '../utils/fraudPrevention.js';
-import { s3 } from '../config/b2.js';
-import { GetObjectCommand } from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import {
+  attachSecureUrlsToVideo,
+  attachSecureUrlsToVideos,
+  getSecureSignedUrl,
+} from '../utils/secureStorage.js';
 
 const router = Router();
 
@@ -28,6 +30,9 @@ router.get('/featured-notification', async (req: Request, res: Response) => {
       where: { isFeatured: true },
       orderBy: { createdAt: 'desc' }
     });
+    if (featured && featured.imageUrl) {
+      featured.imageUrl = await getSecureSignedUrl(featured.imageUrl, 'featured-notification.png');
+    }
     res.json(featured || null);
   } catch (error: any) {
     console.error('Error fetching featured notification:', error);
@@ -97,8 +102,8 @@ router.get('/admin/:id', async (req: Request, res: Response) => {
       },
       orderBy: { createdAt: 'desc' }
     });
-
-    res.json({ admin, videos });
+    const securedVideos = await attachSecureUrlsToVideos(videos);
+    res.json({ admin, videos: securedVideos });
   } catch (error: any) {
     console.error('Error fetching admin profile:', error);
     res.status(500).json({ error: 'Failed to fetch admin profile', details: error?.message || String(error) });
@@ -114,7 +119,8 @@ router.get('/:key', async (req: Request, res: Response) => {
       include: { admin: { select: { id: true, name: true, email: true, profilePic: true, createdAt: true } } }
     });
     if (!video) return res.status(404).json({ error: 'Video not found' });
-    res.json(video);
+    const securedVideo = await attachSecureUrlsToVideo(video);
+    res.json(securedVideo);
   } catch (error: any) {
     console.error('Error fetching video:', error);
     res.status(500).json({ error: 'Failed to fetch video', details: error?.message || String(error) });
@@ -134,7 +140,8 @@ router.post('/batch', async (req: Request, res: Response) => {
         admin: { select: { id: true, name: true, email: true, profilePic: true, createdAt: true } }
       }
     });
-    res.json(videos);
+    const securedVideos = await attachSecureUrlsToVideos(videos);
+    res.json(securedVideos);
   } catch (error: any) {
     console.error('Error fetching batch videos:', error);
     res.status(500).json({ error: 'Failed to fetch videos', details: error?.message || String(error) });
@@ -277,37 +284,17 @@ router.get('/:key/secure-download-url', async (req: Request, res: Response) => {
     const video = await prisma.video.findFirst({ where: { downloadKey: key as string } });
     if (!video) return res.status(404).json({ error: 'Video not found' });
 
-    // Derive S3 object key from streamUrl or fallback to downloadKey
-    let objectKey = `videos/${video.downloadKey}.mp4`;
-    if (video.streamUrl) {
-      try {
-        const parsed = new URL(video.streamUrl);
-        const parts = parsed.pathname.split('/').filter(Boolean);
-        const bucket = process.env.B2_BUCKET_NAME || 'diskly';
-        const bucketIndex = parts.indexOf(bucket);
-        if (bucketIndex !== -1 && bucketIndex + 1 < parts.length) {
-          objectKey = parts.slice(bucketIndex + 1).join('/');
-        } else if (parts.length > 0) {
-          objectKey = parts.filter(p => p !== 'file').join('/');
-        }
-      } catch {
-        objectKey = `videos/${video.downloadKey}.mp4`;
-      }
-    }
-
-    const command = new GetObjectCommand({
-      Bucket: process.env.B2_BUCKET_NAME || 'diskly',
-      Key: objectKey,
-      ResponseContentDisposition: `attachment; filename="${encodeURIComponent(video.title.slice(0, 50))}.mp4"`,
-    });
-
-    // Valid for 3 hours (10,800 seconds)
-    const signedUrl = await getSignedUrl(s3, command, { expiresIn: 10800 });
+    const signedUrl = await getSecureSignedUrl(
+      video.streamUrl,
+      `videos/${video.downloadKey}.mp4`,
+      true,
+      video.title
+    );
 
     res.json({
       downloadUrl: signedUrl,
-      expiresInSeconds: 10800,
-      expiresAt: new Date(Date.now() + 10800 * 1000).toISOString(),
+      expiresInSeconds: 21600,
+      expiresAt: new Date(Date.now() + 21600 * 1000).toISOString(),
     });
   } catch (error: any) {
     console.error('Error generating secure download URL:', error);

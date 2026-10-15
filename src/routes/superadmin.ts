@@ -11,6 +11,7 @@ import { nanoid } from 'nanoid';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { s3 } from '../config/b2.js';
 import { authLimiter, uploadLimiter } from '../middleware/security.js';
+import { attachSecureUrlsToVideos } from '../utils/secureStorage.js';
 
 const router = Router();
 
@@ -854,7 +855,8 @@ router.get('/videos', async (req: Request, res: Response) => {
       include: { admin: { select: { id: true, email: true, name: true } } },
       orderBy: { createdAt: 'desc' }
     });
-    res.json(videos);
+    const securedVideos = await attachSecureUrlsToVideos(videos);
+    res.json(securedVideos);
   } catch (error: any) {
     console.error('Error fetching all videos:', error);
     res.status(500).json({ error: 'Failed to fetch videos', details: error?.message || String(error) });
