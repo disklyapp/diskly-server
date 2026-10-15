@@ -128,7 +128,16 @@ export const clientVerification = (req: Request, res: Response, next: NextFuncti
     origin.includes('diskly.in') ||
     origin.includes('railway.app');
 
-  if (clientKey === expectedKey || isTrustedWebOrigin) {
+  // Also check User-Agent for Diskly mobile app, ExoPlayer, or native Android network client
+  const userAgent = (req.headers['user-agent'] as string) || '';
+  const isAppClient =
+    userAgent.includes('DisklyApp') ||
+    userAgent.includes('Dart') ||
+    userAgent.includes('ExoPlayer') ||
+    userAgent.includes('okhttp') ||
+    userAgent.includes('stagefright');
+
+  if (clientKey === expectedKey || isTrustedWebOrigin || isAppClient) {
     return next();
   }
 
