@@ -94,10 +94,13 @@ model DailyAnalytic {
 }
 
 model Notification {
-  id        Int      @id @default(autoincrement())
-  title     String
-  message   String
-  createdAt DateTime @default(now())
+  id          Int      @id @default(autoincrement())
+  title       String
+  message     String
+  imageUrl    String?
+  isFeatured  Boolean  @default(false)
+  actionUrl   String?
+  createdAt   DateTime @default(now())
 }
 
 model SuperadminActivityLog {

@@ -6,8 +6,39 @@ import { initializeApp, cert } from 'firebase-admin/app';
 import { getMessaging } from 'firebase-admin/messaging';
 import fs from 'fs';
 import path from 'path';
+import multer from 'multer';
+import { nanoid } from 'nanoid';
+import { PutObjectCommand } from '@aws-sdk/client-s3';
+import { s3 } from '../config/b2.js';
+import { authLimiter, uploadLimiter } from '../middleware/security.js';
 
 const router = Router();
+
+// Configure multer for 1:1 notification image upload
+const notificationUpload = multer({
+  dest: 'uploads/',
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB max
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files (PNG, JPG, WEBP) are allowed'));
+    }
+  }
+});
+
+function getB2CdnUrl(objectKey: string): string {
+  const domain = process.env.CLOUDFLARE_DOMAIN || '';
+  const bucket = process.env.B2_BUCKET_NAME || 'diskly';
+  if (domain) {
+    if (domain.includes('/file/')) {
+      return `${domain.replace(/\/$/, '')}/${objectKey}`;
+    }
+    return `https://${domain.replace(/\/$/, '')}/file/${bucket}/${objectKey}`;
+  }
+  const endpoint = process.env.B2_ENDPOINT || 'https://s3.us-east-005.backblazeb2.com';
+  return `${endpoint.replace(/\/$/, '')}/${bucket}/${objectKey}`;
+}
 
 // Initialize Firebase Admin SDK
 const serviceAccountPath = path.resolve(process.cwd(), 'firebaseapi.json');
@@ -50,7 +81,7 @@ async function logActivity(action: string, details: string) {
 }
 
 // Login for Superadmin
-router.post('/login', (req: Request, res: Response) => {
+router.post('/login', authLimiter, (req: Request, res: Response) => {
   const { username, password } = req.body;
   if (
     username === process.env.SUPERADMIN_USERNAME &&
@@ -230,15 +261,45 @@ router.get('/notifications-panel', (req: Request, res: Response) => {
 
     <!-- Notification Form -->
     <div id="notify-sec" class="notification-section">
+      <div id="active-featured-box" style="display:none; background: #1a2d36; border: 1px solid #1BEBB9; border-radius: 10px; padding: 14px; margin-bottom: 20px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 8px;">
+          <span style="font-size: 11px; text-transform: uppercase; font-weight:700; color:#1BEBB9; letter-spacing:0.5px;">★ Current Active Featured Popup</span>
+          <button onclick="clearFeaturedNotification()" style="background:transparent; border:1px solid #ff5252; color:#ff5252; padding:3px 10px; border-radius:6px; font-size:11px; cursor:pointer; width:auto; margin:0; box-shadow:none;">Clear</button>
+        </div>
+        <div style="display:flex; gap:12px; align-items:center;">
+          <img id="feat-img-prev" src="" style="width:60px; height:60px; object-fit:cover; aspect-ratio:1; border-radius:8px; border:1px solid #2a414f; display:none;" />
+          <div>
+            <div id="feat-title" style="font-size:14px; font-weight:600; color:#fff;"></div>
+            <div id="feat-desc" style="font-size:12px; color:#8E9EAA; margin-top:2px;"></div>
+          </div>
+        </div>
+      </div>
+
       <div class="form-group">
-        <label for="title">Notification Title</label>
-        <input type="text" id="title" placeholder="e.g. New Update Available!">
+        <label for="title">Notification Title *</label>
+        <input type="text" id="title" placeholder="e.g. Special Announcement!">
       </div>
       <div class="form-group">
-        <label for="message">Message Content</label>
-        <textarea id="message" rows="4" placeholder="Enter notification message details..."></textarea>
+        <label for="message">Message Content *</label>
+        <textarea id="message" rows="3" placeholder="Enter notification message details..."></textarea>
       </div>
-      <button onclick="sendNotification()">Send Notification</button>
+      <div class="form-group">
+        <label for="actionUrl">Action / Promo URL (Optional)</label>
+        <input type="url" id="actionUrl" placeholder="https://diskly.in/...">
+      </div>
+      <div class="form-group">
+        <label for="imageFile">1:1 Square Image (Backblaze B2 Upload)</label>
+        <input type="file" id="imageFile" accept="image/*" onchange="previewUploadImage(event)" style="padding: 8px;">
+        <div id="upload-preview-box" style="display:none; margin-top:8px;">
+          <img id="upload-preview-img" src="" style="width:70px; height:70px; aspect-ratio:1; object-fit:cover; border-radius:8px; border:1px solid #1BEBB9;" />
+        </div>
+      </div>
+      <div class="form-group" style="display:flex; align-items:center; gap:8px; margin-top:10px;">
+        <input type="checkbox" id="isFeatured" checked style="width:18px; height:18px; cursor:pointer; accent-color:#1BEBB9;">
+        <label for="isFeatured" style="margin:0; font-size:13px; color:#fff; cursor:pointer;">Set as Active 1:1 Featured In-App Popup</label>
+      </div>
+
+      <button onclick="sendNotification()" style="margin-top:10px;">Broadcast Notification</button>
       <button class="logout-btn" onclick="handleLogout()">Logout</button>
     </div>
   </div>
@@ -252,6 +313,7 @@ router.get('/notifications-panel', (req: Request, res: Response) => {
     window.onload = function() {
       if (token) {
         showNotificationForm();
+        loadActiveFeatured();
       }
     };
 
@@ -272,13 +334,75 @@ router.get('/notifications-panel', (req: Request, res: Response) => {
     function showNotificationForm() {
       document.getElementById('login-sec').style.display = 'none';
       document.getElementById('notify-sec').style.display = 'block';
-      document.getElementById('panel-subtitle').innerText = 'Send Push Notifications to App Users';
+      document.getElementById('panel-subtitle').innerText = 'Send Push Notifications & Configure 1:1 Featured Popups';
     }
 
     function showLoginForm() {
       document.getElementById('login-sec').style.display = 'block';
       document.getElementById('notify-sec').style.display = 'none';
       document.getElementById('panel-subtitle').innerText = 'Superadmin Access Required';
+    }
+
+    function previewUploadImage(e) {
+      const file = e.target.files[0];
+      const box = document.getElementById('upload-preview-box');
+      const img = document.getElementById('upload-preview-img');
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = function(evt) {
+          img.src = evt.target.result;
+          box.style.display = 'block';
+        };
+        reader.readAsDataURL(file);
+      } else {
+        box.style.display = 'none';
+      }
+    }
+
+    async function loadActiveFeatured() {
+      try {
+        const res = await fetch(API_BASE + '/notifications/featured', {
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        if (res.ok) {
+          const featured = await res.json();
+          const box = document.getElementById('active-featured-box');
+          if (featured && featured.id) {
+            box.style.display = 'block';
+            document.getElementById('feat-title').innerText = featured.title;
+            document.getElementById('feat-desc').innerText = featured.message;
+            const img = document.getElementById('feat-img-prev');
+            if (featured.imageUrl) {
+              img.src = featured.imageUrl;
+              img.style.display = 'block';
+            } else {
+              img.style.display = 'none';
+            }
+          } else {
+            box.style.display = 'none';
+          }
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function clearFeaturedNotification() {
+      if (!confirm('Clear active featured popup?')) return;
+      try {
+        const res = await fetch(API_BASE + '/notifications/clear-featured', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        if (res.ok) {
+          showToast('Featured popup cleared!');
+          loadActiveFeatured();
+        } else {
+          showToast('Failed to clear', true);
+        }
+      } catch (err) {
+        showToast('Network error', true);
+      }
     }
 
     async function handleLogin() {
@@ -302,6 +426,7 @@ router.get('/notifications-panel', (req: Request, res: Response) => {
           localStorage.setItem('superadmin_token', token);
           showToast('Login successful!');
           showNotificationForm();
+          loadActiveFeatured();
         } else {
           showToast(data.error || 'Login failed', true);
         }
@@ -313,6 +438,9 @@ router.get('/notifications-panel', (req: Request, res: Response) => {
     async function sendNotification() {
       const title = document.getElementById('title').value.trim();
       const message = document.getElementById('message').value.trim();
+      const actionUrl = document.getElementById('actionUrl').value.trim();
+      const isFeatured = document.getElementById('isFeatured').checked;
+      const fileInput = document.getElementById('imageFile');
 
       if (!title || !message) {
         showToast('Please enter title and message', true);
@@ -320,22 +448,34 @@ router.get('/notifications-panel', (req: Request, res: Response) => {
       }
 
       try {
+        const formData = new FormData();
+        formData.append('title', title);
+        formData.append('message', message);
+        formData.append('actionUrl', actionUrl);
+        formData.append('isFeatured', isFeatured ? 'true' : 'false');
+        if (fileInput.files.length > 0) {
+          formData.append('image', fileInput.files[0]);
+        }
+
         const res = await fetch(API_BASE + '/notifications', {
           method: 'POST',
           headers: { 
-            'Content-Type': 'application/json',
             'Authorization': 'Bearer ' + token
           },
-          body: JSON.stringify({ title, message })
+          body: formData
         });
         const data = await res.json();
         if (res.status === 401 || res.status === 403) {
           showToast('Session expired. Please login again.', true);
           handleLogout();
         } else if (res.ok) {
-          showToast('Notification sent successfully!');
+          showToast('Notification published successfully!');
           document.getElementById('title').value = '';
           document.getElementById('message').value = '';
+          document.getElementById('actionUrl').value = '';
+          fileInput.value = '';
+          document.getElementById('upload-preview-box').style.display = 'none';
+          loadActiveFeatured();
         } else {
           showToast(data.error || 'Failed to send notification', true);
         }
@@ -844,28 +984,89 @@ router.get('/activity-logs', async (req: Request, res: Response) => {
   }
 });
 
-// Create a new notification (Superadmin only)
-router.post('/notifications', async (req: Request, res: Response) => {
-  const { title, message } = req.body;
+// Create a new notification (Superadmin only) with optional 1:1 image on Backblaze B2
+router.post('/notifications', notificationUpload.single('image'), async (req: Request, res: Response) => {
+  const { title, message, actionUrl } = req.body;
+  const isFeatured = req.body.isFeatured === true || req.body.isFeatured === 'true';
+
   if (!title || !message) {
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
     return res.status(400).json({ error: 'Title and message are required' });
   }
 
+  let imageUrl: string | null = req.body.imageUrl || null;
+
   try {
+    // If a 1:1 image file was uploaded, securely upload it to Backblaze B2
+    if (req.file) {
+      const file = req.file;
+      const fileExtension = file.originalname.split('.').pop() || 'png';
+      const objectKey = `notifications/feat_${nanoid(12)}.${fileExtension}`;
+
+      const fileStream = fs.createReadStream(file.path);
+      const uploadParams = {
+        Bucket: process.env.B2_BUCKET_NAME || 'diskly',
+        Key: objectKey,
+        Body: fileStream,
+        ContentType: file.mimetype,
+      };
+
+      await s3.send(new PutObjectCommand(uploadParams));
+
+      // Remove temp file from disk
+      if (fs.existsSync(file.path)) {
+        fs.unlinkSync(file.path);
+      }
+
+      imageUrl = getB2CdnUrl(objectKey);
+    }
+
+    // Override rule: Only 1 active featured notification at any time
+    if (isFeatured) {
+      await prisma.notification.updateMany({
+        where: { isFeatured: true },
+        data: { isFeatured: false },
+      });
+    }
+
     const notification = await prisma.notification.create({
-      data: { title, message }
+      data: {
+        title,
+        message,
+        imageUrl,
+        isFeatured,
+        actionUrl: actionUrl || null,
+      },
     });
+
+    await logActivity(
+      'CREATE_NOTIFICATION',
+      `Created notification "${title}" (Featured: ${isFeatured}, Image: ${imageUrl ? 'Yes' : 'No'})`
+    );
 
     // Send push notification via Firebase Cloud Messaging if initialized
     if (firebaseInitialized) {
       try {
-        const payload = {
+        const payload: any = {
           notification: {
             title: title,
-            body: message
+            body: message,
           },
-          topic: 'all_users'
+          data: {
+            notificationId: String(notification.id),
+            isFeatured: isFeatured ? 'true' : 'false',
+            ...(imageUrl ? { imageUrl } : {}),
+            ...(actionUrl ? { actionUrl } : {}),
+          },
+          topic: 'all_users',
         };
+
+        if (imageUrl) {
+          payload.notification.imageUrl = imageUrl;
+        }
+
         await getMessaging().send(payload);
         console.log(`Successfully sent push notification for: "${title}" to topic "all_users"`);
       } catch (fcmError) {
@@ -877,8 +1078,84 @@ router.post('/notifications', async (req: Request, res: Response) => {
 
     res.json({ message: 'Notification sent successfully', notification });
   } catch (error: any) {
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
     console.error('Error creating notification:', error);
     res.status(500).json({ error: 'Failed to send notification', details: error?.message || String(error) });
+  }
+});
+
+// Fetch current active featured notification
+router.get('/notifications/featured', async (req: Request, res: Response) => {
+  try {
+    const featured = await prisma.notification.findFirst({
+      where: { isFeatured: true },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json(featured || null);
+  } catch (error: any) {
+    console.error('Error fetching featured notification:', error);
+    res.status(500).json({ error: 'Failed to fetch featured notification', details: error?.message || String(error) });
+  }
+});
+
+// Clear active featured notification (unset isFeatured on all)
+router.post('/notifications/clear-featured', async (req: Request, res: Response) => {
+  try {
+    await prisma.notification.updateMany({
+      where: { isFeatured: true },
+      data: { isFeatured: false },
+    });
+    await logActivity('CLEAR_FEATURED_NOTIFICATION', 'Superadmin cleared active featured notification popup');
+    res.json({ message: 'Featured notification cleared successfully' });
+  } catch (error: any) {
+    console.error('Error clearing featured notification:', error);
+    res.status(500).json({ error: 'Failed to clear featured notification', details: error?.message || String(error) });
+  }
+});
+
+// Set a specific notification as the active featured notification (overriding previous)
+router.post('/notifications/:id/feature', async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (isNaN(id)) {
+    return res.status(400).json({ error: 'Invalid notification ID' });
+  }
+
+  try {
+    // Override rule: Clear existing featured
+    await prisma.notification.updateMany({
+      where: { isFeatured: true },
+      data: { isFeatured: false },
+    });
+
+    const updated = await prisma.notification.update({
+      where: { id },
+      data: { isFeatured: true },
+    });
+
+    await logActivity('SET_FEATURED_NOTIFICATION', `Set notification #${id} as active featured`);
+    res.json({ message: 'Notification set as featured', notification: updated });
+  } catch (error: any) {
+    console.error('Error setting featured notification:', error);
+    res.status(500).json({ error: 'Failed to set featured notification', details: error?.message || String(error) });
+  }
+});
+
+// Delete a notification
+router.delete('/notifications/:id', async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (isNaN(id)) {
+    return res.status(400).json({ error: 'Invalid notification ID' });
+  }
+
+  try {
+    await prisma.notification.delete({ where: { id } });
+    await logActivity('DELETE_NOTIFICATION', `Deleted notification #${id}`);
+    res.json({ message: 'Notification deleted successfully' });
+  } catch (error: any) {
+    console.error('Error deleting notification:', error);
+    res.status(500).json({ error: 'Failed to delete notification', details: error?.message || String(error) });
   }
 });
 

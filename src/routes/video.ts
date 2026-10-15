@@ -1,5 +1,9 @@
 import { Router, Request, Response } from 'express';
 import prisma from '../config/prisma.js';
+import { isViewEligible, isLikeEligible } from '../utils/fraudPrevention.js';
+import { s3 } from '../config/b2.js';
+import { GetObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 const router = Router();
 
@@ -14,6 +18,20 @@ router.get('/notifications', async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error('Error fetching notifications:', error);
     res.status(500).json({ error: 'Failed to fetch notifications', details: error?.message || String(error) });
+  }
+});
+
+// Fetch active 1:1 featured notification for app startup popup
+router.get('/featured-notification', async (req: Request, res: Response) => {
+  try {
+    const featured = await prisma.notification.findFirst({
+      where: { isFeatured: true },
+      orderBy: { createdAt: 'desc' }
+    });
+    res.json(featured || null);
+  } catch (error: any) {
+    console.error('Error fetching featured notification:', error);
+    res.status(500).json({ error: 'Failed to fetch featured notification', details: error?.message || String(error) });
   }
 });
 
@@ -123,13 +141,21 @@ router.post('/batch', async (req: Request, res: Response) => {
   }
 });
 
-// Add a View (and calculate earnings)
+// Add a View (with IP cooldown & fraud prevention to protect payout integrity)
 router.post('/:key/view', async (req: Request, res: Response) => {
   const { key } = req.params;
+  const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.ip || '127.0.0.1';
   
   try {
     const video = await prisma.video.findFirst({ where: { downloadKey: key as string } });
     if (!video) return res.status(404).json({ error: 'Video not found' });
+
+    // Fraud Prevention Check: Only 1 credited view per IP per video per 6 hours
+    const isEligible = await isViewEligible(clientIp, key as string);
+    if (!isEligible) {
+      // Cooldown active: Return success to player so streaming is smooth, but do not increment earnings
+      return res.json({ message: 'View recorded (cooldown active)', credited: false });
+    }
 
     let setting = await prisma.systemSetting.findUnique({ where: { id: 1 } });
     const earningPerView = (setting?.earningRatePer1000Views || 1.0) / 1000.0;
@@ -178,20 +204,26 @@ router.post('/:key/view', async (req: Request, res: Response) => {
       }
     });
 
-    res.json({ message: 'View recorded' });
+    res.json({ message: 'View recorded', credited: true });
   } catch (error: any) {
     console.error('Error recording view:', error);
     res.status(500).json({ error: 'Failed to record view', details: error?.message || String(error) });
   }
 });
 
-// Add a Like
+// Add a Like (with 24h IP cooldown to prevent spam)
 router.post('/:key/like', async (req: Request, res: Response) => {
   const { key } = req.params;
+  const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.ip || '127.0.0.1';
   
   try {
     const video = await prisma.video.findFirst({ where: { downloadKey: key as string } });
     if (!video) return res.status(404).json({ error: 'Video not found' });
+
+    const isEligible = await isLikeEligible(clientIp, key as string);
+    if (!isEligible) {
+      return res.json({ message: 'Like already recorded for this session', credited: false });
+    }
 
     const updatedVideo = await prisma.video.update({
       where: { id: video.id },
@@ -211,7 +243,7 @@ router.post('/:key/like', async (req: Request, res: Response) => {
       });
     }
 
-    res.json({ message: 'Like recorded' });
+    res.json({ message: 'Like recorded', credited: true });
   } catch (error: any) {
     console.error('Error recording like:', error);
     res.status(500).json({ error: 'Failed to record like', details: error?.message || String(error) });
@@ -235,6 +267,51 @@ router.post('/:key/download', async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error('Error recording download:', error);
     res.status(500).json({ error: 'Failed to record download', details: error?.message || String(error) });
+  }
+});
+
+// Generate Time-Limited Pre-Signed Download URL (Protects Backblaze B2 from hotlinking and bandwidth theft)
+router.get('/:key/secure-download-url', async (req: Request, res: Response) => {
+  const { key } = req.params;
+  try {
+    const video = await prisma.video.findFirst({ where: { downloadKey: key as string } });
+    if (!video) return res.status(404).json({ error: 'Video not found' });
+
+    // Derive S3 object key from streamUrl or fallback to downloadKey
+    let objectKey = `videos/${video.downloadKey}.mp4`;
+    if (video.streamUrl) {
+      try {
+        const parsed = new URL(video.streamUrl);
+        const parts = parsed.pathname.split('/').filter(Boolean);
+        const bucket = process.env.B2_BUCKET_NAME || 'diskly';
+        const bucketIndex = parts.indexOf(bucket);
+        if (bucketIndex !== -1 && bucketIndex + 1 < parts.length) {
+          objectKey = parts.slice(bucketIndex + 1).join('/');
+        } else if (parts.length > 0) {
+          objectKey = parts.filter(p => p !== 'file').join('/');
+        }
+      } catch {
+        objectKey = `videos/${video.downloadKey}.mp4`;
+      }
+    }
+
+    const command = new GetObjectCommand({
+      Bucket: process.env.B2_BUCKET_NAME || 'diskly',
+      Key: objectKey,
+      ResponseContentDisposition: `attachment; filename="${encodeURIComponent(video.title.slice(0, 50))}.mp4"`,
+    });
+
+    // Valid for 3 hours (10,800 seconds)
+    const signedUrl = await getSignedUrl(s3, command, { expiresIn: 10800 });
+
+    res.json({
+      downloadUrl: signedUrl,
+      expiresInSeconds: 10800,
+      expiresAt: new Date(Date.now() + 10800 * 1000).toISOString(),
+    });
+  } catch (error: any) {
+    console.error('Error generating secure download URL:', error);
+    res.status(500).json({ error: 'Failed to generate secure download URL', details: error?.message || String(error) });
   }
 });
 

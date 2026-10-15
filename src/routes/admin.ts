@@ -10,6 +10,7 @@ import { Upload } from '@aws-sdk/lib-storage';
 import fs from 'fs';
 import path from 'path';
 import ffmpeg, { normalizeVideoFormat, transcodeToStreamableMp4 } from '../utils/ffmpeg.js';
+import { authLimiter, uploadLimiter } from '../middleware/security.js';
 
 const uploadDir = 'uploads';
 if (!fs.existsSync(uploadDir)) {
@@ -65,7 +66,7 @@ router.post('/register', async (req: Request, res: Response) => {
 });
 
 // Login
-router.post('/login', async (req: Request, res: Response) => {
+router.post('/login', authLimiter, async (req: Request, res: Response) => {
   const { email, password } = req.body;
   try {
     const admin = await prisma.admin.findUnique({ where: { email } });
@@ -477,7 +478,7 @@ router.post('/videos/chunk/init', async (req: Request, res: Response) => {
 });
 
 // Upload Chunk
-router.post('/videos/chunk/upload', upload.single('video'), async (req: Request, res: Response) => {
+router.post('/videos/chunk/upload', uploadLimiter, upload.single('video'), async (req: Request, res: Response) => {
   const { uploadId, chunkIndex } = req.body;
   const file = req.file;
 
@@ -704,7 +705,7 @@ router.post('/videos/chunk/complete', async (req: Request, res: Response) => {
 });
 
 // Upload Video to Backblaze B2 (standard single request upload)
-router.post('/videos', upload.single('video'), async (req: Request, res: Response) => {
+router.post('/videos', uploadLimiter, upload.single('video'), async (req: Request, res: Response) => {
   const adminId = (req as any).adminId;
   const { thumbnailUrl, description } = req.body;
   let { title } = req.body;
