@@ -237,7 +237,7 @@ export const videoWorker = new Worker(
         const admin = await prisma.admin.findUnique({ where: { id: adminId } });
         if (!admin) throw new Error('Admin not found');
 
-        const disklyLink = `https://diskly.in/${downloadKey}`;
+        const disklyLink = `https://diskly.in/file/${downloadKey}`;
         let finalCaption = disklyLink;
         if (admin.telegramKeepText && fileName) {
           finalCaption = `${fileName}\n\n${finalCaption}`;
@@ -423,7 +423,7 @@ export const videoWorker = new Worker(
           if (fs.existsSync(localFilePath)) fs.unlinkSync(localFilePath);
           if (localThumbPath && fs.existsSync(localThumbPath)) fs.unlinkSync(localThumbPath);
 
-          const disklyLink = `https://diskly.in/${downloadKey}`;
+          const disklyLink = `https://diskly.in/file/${downloadKey}`;
           finalText = finalText.split(url).join(disklyLink);
           newLinks.push(disklyLink);
         }

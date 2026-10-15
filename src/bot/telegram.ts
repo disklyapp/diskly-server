@@ -45,7 +45,7 @@ const isDisklyLink = (url: string): boolean => {
 
 // Helper: Process a single Diskly link (clone)
 const processDisklyLink = async (url: string, adminId: number): Promise<string> => {
-  const match = url.match(/diskly\.in\/([a-zA-Z0-9_-]+)/i) || url.match(/diskly\.co\/([a-zA-Z0-9_-]+)/i) || url.match(/diskly\.link\/([a-zA-Z0-9_-]+)/i);
+  const match = url.match(/diskly\.(?:in|co|link)\/(?:file\/)?([a-zA-Z0-9_-]+)/i);
   const targetDownloadKey = match ? match[1] : url;
 
   const originalVideo = await prisma.video.findFirst({ where: { downloadKey: targetDownloadKey } });
@@ -66,7 +66,7 @@ const processDisklyLink = async (url: string, adminId: number): Promise<string> 
     }
   });
 
-  return `https://diskly.in/${newDownloadKey}`;
+  return `https://diskly.in/file/${newDownloadKey}`;
 };
 
 export const setupTelegramBot = () => {
@@ -453,7 +453,7 @@ export const setupTelegramBot = () => {
         }
 
         const downloadKeys = uniqueTeraboxUrls.map(() => nanoid(10));
-        const newLinks = downloadKeys.map(key => `https://diskly.in/${key}`);
+        const newLinks = downloadKeys.map(key => `https://diskly.in/file/${key}`);
         let replacedText = rawText;
         for (let i = 0; i < uniqueTeraboxUrls.length; i++) {
           replacedText = replacedText.split(uniqueTeraboxUrls[i]).join(newLinks[i]);
